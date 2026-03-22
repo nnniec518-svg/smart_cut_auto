@@ -12,6 +12,7 @@ import json
 import time
 import subprocess
 import numpy as np
+import yaml
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 import logging
@@ -20,14 +21,16 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 
 from db.models import Asset, Segment, Database
+from core.logic_filter import LogicFilter, ClipAnalysis, ClipQuality
+from core.clip_evaluator import ClipEvaluator, ClipData, ClipScore, ClipQuality as EvaluatorQuality
 
 logger = logging.getLogger("smart_cut")
 
 # 开拍提示词正则
 CUE_PATTERN = re.compile(r"^(一|二|三|四|五|1|2|3|4|5|走|开始|准备|action|咔|好的|321|三二一)")
 
-# 静音阈值 (dB)
-SILENCE_THRESHOLD = -50
+# 静音阈值 (dB) - 与 config.yaml 保持一致
+SILENCE_THRESHOLD = -40
 
 
 class VideoAsset:
@@ -45,9 +48,21 @@ class VideoAsset:
         self.has_audio = True
         self.audio_db = -100.0
         self.mtime = 0.0
+        self.speech_ratio = 0.0  # 语音段时长比例
+        # 新增：置信度和打分
+        self.asr_confidence = 0.0
+        self.a_roll_score = 0.0
+        self.quality_status = "valid"
         
     def to_db_model(self) -> Asset:
         """转换为数据库模型"""
+        # 获取配置版本
+        from core.logic_filter import LogicFilter
+        
+        # 转换为 Python float (避免 numpy float32 JSON 序列化问题)
+        confidence = float(self.asr_confidence) if hasattr(self.asr_confidence, '__float__') else self.asr_confidence
+        a_roll_score = float(self.a_roll_score) if hasattr(self.a_roll_score, '__float__') else self.a_roll_score
+        
         return Asset(
             file_path=self.path,
             file_name=self.name,
@@ -60,8 +75,19 @@ class VideoAsset:
             asr_text=self.asr_text,
             transcript_json=json.dumps({
                 "text": self.asr_text,
-                "segments": self.segments
-            }, ensure_ascii=False)
+                "segments": self.segments,
+                "confidence": confidence,
+                "a_roll_score": a_roll_score,
+                "quality_status": self.quality_status,
+                # 缓存一致性检查字段
+                "config_version": LogicFilter.DEFAULT_CONFIG["config_version"],
+                "min_text_length": LogicFilter.DEFAULT_CONFIG["min_text_length"],
+                "min_confidence": LogicFilter.DEFAULT_CONFIG["min_confidence"],
+                "dedup_similarity_threshold": LogicFilter.DEFAULT_CONFIG["dedup_similarity_threshold"]
+            }, ensure_ascii=False),
+            asr_confidence=confidence,
+            a_roll_score=a_roll_score,
+            quality_status=self.quality_status
         )
 
 
@@ -78,6 +104,50 @@ class VideoPurifier:
             db: Database 实例
         """
         self.db = db
+        
+        # 加载配置并初始化 LogicFilter
+        self._init_logic_filter()
+    
+    def _init_logic_filter(self):
+        """从配置文件加载参数并初始化 LogicFilter 和 ClipEvaluator"""
+        try:
+            config_path = Path(__file__).parent.parent / "config.yaml"
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                
+                # 提取 LogicFilter 需要的配置
+                filter_config = {}
+                
+                # 从 filter 配置获取
+                if 'filter' in config:
+                    filter_config.update(config['filter'])
+                
+                # 从 vad 配置获取
+                if 'vad' in config:
+                    filter_config['min_confidence'] = config['vad'].get('speech_noise_thres', 0.8)
+                
+                # 从 classification 获取阈值
+                if 'classification' in config:
+                    filter_config['a_roll_threshold'] = config['classification'].get('a_roll_threshold', 70)
+                
+                self.logic_filter = LogicFilter(filter_config)
+                logger.info(f"LogicFilter initialized with config version: {filter_config.get('config_version', 'unknown')}")
+                
+                # 初始化 ClipEvaluator (通用 A-Roll 评分系统)
+                evaluator_config = {}
+                if 'evaluator' in config:
+                    evaluator_config = config['evaluator']
+                
+                self.evaluator = ClipEvaluator(evaluator_config)
+                logger.info(f"ClipEvaluator initialized with config: {self.evaluator.get_config_hash()[:8]}...")
+            else:
+                self.logic_filter = LogicFilter()
+                self.evaluator = ClipEvaluator()
+        except Exception as e:
+            logger.warning(f"Failed to load config: {e}")
+            self.logic_filter = LogicFilter()
+            self.evaluator = ClipEvaluator()
         
     def _run_ffprobe(self, video_path: str) -> Dict:
         """
@@ -152,7 +222,7 @@ class VideoPurifier:
             
         return result
     
-    def _detect_silence(self, video_path: str) -> Tuple[bool, float]:
+    def _detect_silence(self, video_path: str) -> Tuple[bool, float, float]:
         """
         检测是否为静音素材
         
@@ -160,7 +230,7 @@ class VideoPurifier:
             video_path: 视频路径
             
         Returns:
-            (是否静音, 平均分贝)
+            (是否静音, 平均分贝, 语音段时长比例)
         """
         info = self._run_ffprobe(video_path)
         
@@ -184,17 +254,36 @@ class VideoPurifier:
             speech_segments = self._audio_processor.get_speech_segments(audio, sr)
             is_silence = len(speech_segments) == 0 or (len(audio) / sr) < 0.5
             
-            return is_silence, avg_db
+            # 计算语音段时长比例（用于置信度估算）
+            total_duration = len(audio) / sr
+            speech_duration = sum(end - start for start, end in speech_segments)
+            speech_ratio = speech_duration / total_duration if total_duration > 0 else 0
+            
+            return is_silence, avg_db, speech_ratio
             
         except Exception as e:
             logger.warning(f"静音检测失败: {video_path}, {e}")
-            return False, -50.0
+            return False, -50.0, 0.0
     
     def _load_asr_model(self):
         """加载 FunASR 模型"""
         from core.asr import ASR
         if not hasattr(self, '_asr_model'):
-            self._asr_model = ASR()
+            # 尝试从配置文件加载 VAD 参数
+            vad_params = None
+            try:
+                import yaml
+                config_path = Path(__file__).parent.parent / "config.yaml"
+                if config_path.exists():
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = yaml.safe_load(f)
+                    if 'vad' in config:
+                        vad_params = config['vad']
+                        logger.info(f"从配置文件加载 VAD 参数: {vad_params}")
+            except Exception as e:
+                logger.warning(f"加载 VAD 配置失败，使用默认参数: {e}")
+            
+            self._asr_model = ASR(vad_params=vad_params)
         return self._asr_model
     
     def _find_cue_offset(self, segments: List[Dict], max_search_time: float = 3.0) -> float:
@@ -272,7 +361,7 @@ class VideoPurifier:
         
         return valid_start_time
     
-    def _asr_with_timestamp(self, video_path: str) -> Tuple[str, List[Dict]]:
+    def _asr_with_timestamp(self, video_path: str) -> Tuple[str, List[Dict], float]:
         """
         调用 FunASR 获取带时间戳的 ASR 结果
         
@@ -280,7 +369,7 @@ class VideoPurifier:
             video_path: 视频路径
             
         Returns:
-            (完整文本, 词级时间戳列表)
+            (完整文本, 词级时间戳列表, 置信度)
         """
         try:
             asr_model = self._load_asr_model()
@@ -293,21 +382,44 @@ class VideoPurifier:
                 )
             
             if not raw_result or len(raw_result) == 0:
-                return "", []
+                return "", [], 0.0
             
             item = raw_result[0]
+            text = ""
+            word_timestamps = []
+            confidence = 0.0
+            
             if isinstance(item, dict):
                 text = item.get("text", "")
                 word_timestamps = item.get("timestamp", [])
+                # 尝试获取置信度
+                segments_data = item.get("segments", [])
+                if segments_data and len(segments_data) > 0:
+                    scores = [seg.get("score", 0.0) for seg in segments_data if isinstance(seg, dict)]
+                    if scores:
+                        confidence = sum(scores) / len(scores)
             elif isinstance(item, list) and len(item) > 0:
                 if isinstance(item[0], dict):
                     text = item[0].get("text", "")
                     word_timestamps = item[0].get("timestamp", [])
+                    segments_data = item[0].get("segments", [])
+                    if segments_data and len(segments_data) > 0:
+                        scores = [seg.get("score", 0.0) for seg in segments_data if isinstance(seg, dict)]
+                        if scores:
+                            confidence = sum(scores) / len(scores)
                 else:
                     text = str(item[0]) if item else ""
                     word_timestamps = []
             else:
-                return "", []
+                return "", [], 0.0
+            
+            # 如果没找到置信度，尝试从 tokens 中获取
+            if confidence == 0.0 and isinstance(item, dict):
+                tokens_data = item.get("tokens", [])
+                if tokens_data:
+                    scores = [t.get("score", 0.0) for t in tokens_data if isinstance(t, dict) and t.get("score", 0.0) > 0]
+                    if scores:
+                        confidence = sum(scores) / len(scores)
             
             # 转换为 segments 格式
             segments = []
@@ -323,11 +435,12 @@ class VideoPurifier:
                         "timestamp": [ts]
                     })
             
-            return text, segments
+            logger.debug(f"ASR 置信度: {confidence:.4f}")
+            return text, segments, confidence
             
         except Exception as e:
             logger.error(f"ASR 处理失败: {video_path}, {e}")
-            return "", []
+            return "", [], 0.0
     
     def purify(self, video_path: str, force_reprocess: bool = False) -> VideoAsset:
         """
@@ -363,7 +476,7 @@ class VideoPurifier:
         
         # 1. 静音检测
         logger.info(f"检测静音: {asset.name}")
-        is_silence, avg_db = self._detect_silence(video_path)
+        is_silence, avg_db, speech_ratio = self._detect_silence(video_path)
         asset.has_audio = not is_silence
         asset.audio_db = avg_db
         
@@ -379,26 +492,74 @@ class VideoPurifier:
         
         # 3. ASR 识别 (带时间戳)
         logger.info(f"ASR 识别: {asset.name}")
-        asr_text, word_segments = self._asr_with_timestamp(video_path)
+        asr_text, word_segments, asr_confidence = self._asr_with_timestamp(video_path)
         
         if asr_text:
             asset.asr_text = asr_text
             asset.segments = word_segments
-            asset.track_type = "A_ROLL"
-            logger.info(f"素材 {asset.name} 判定为 A_ROLL (ASR 成功)")
             
-            # 4. 计算 Offset
+            # ===== 使用 ClipEvaluator 通用评分系统 =====
+            # 获取 VAD 语音段信息
+            speech_segments = []
+            try:
+                if hasattr(self, '_audio_processor'):
+                    audio, sr = self._audio_processor.load_audio(video_path)
+                    speech_segments = self._audio_processor.get_speech_segments(audio, sr)
+            except Exception as e:
+                logger.warning(f"获取语音段失败: {e}")
+            
+            # 构建 ClipData
+            clip_data = ClipData(
+                clip_id=str(asset.name),
+                file_path=video_path,
+                text=asr_text,
+                duration=asset.duration,
+                audio_db=asset.audio_db,
+                speech_segments=speech_segments,
+                word_segments=word_segments,
+                mtime=asset.mtime
+            )
+            
+            # 计算评分 (使用 ClipEvaluator)
+            # 先找 offset
             offset = self._find_cue_offset(word_segments)
-            asset.valid_start_offset = offset
+            clip_score = self.evaluator.calculate_score(clip_data, offset_start=offset)
             
-            if offset > 0:
-                logger.info(f"素材 {asset.name} 有效起始偏移: {offset:.3f}s")
+            # 物理安全检查
+            if not self.evaluator.check_duration_safety(clip_score):
+                clip_score.quality = EvaluatorQuality.INVALID_SHORT
+            
+            # 保存置信度和打分
+            asset.asr_confidence = clip_score.total_score
+            asset.a_roll_score = clip_score.total_score * 100  # 转换为百分制
+            asset.quality_status = clip_score.quality.value
+            
+            # 根据评分判定 A/B Roll
+            if clip_score.quality == EvaluatorQuality.VALID and clip_score.total_score >= self.evaluator.config["min_score"]:
+                asset.track_type = "A_ROLL"
+                logger.info(
+                    f"素材 {asset.name} 判定为 A_ROLL "
+                    f"(score={clip_score.total_score:.2f}, vad={clip_score.vad_ratio:.2f}, "
+                    f"energy={clip_score.energy_score:.2f})"
+                )
             else:
-                logger.info(f"素材 {asset.name} 无提示词，使用完整内容")
+                asset.track_type = "B_ROLL"
+                logger.info(
+                    f"素材 {asset.name} 判定为 B_ROLL "
+                    f"(score={clip_score.total_score:.2f}, quality={clip_score.quality.value})"
+                )
+            
+            # 记录 offset (已在上面计算)
+            if clip_score.quality == EvaluatorQuality.VALID:
+                if offset > 0:
+                    logger.info(f"素材 {asset.name} 有效起始偏移: {offset:.3f}s")
+                else:
+                    logger.info(f"素材 {asset.name} 无提示词，使用完整内容")
         else:
             # ASR 失败，降级为 B_ROLL
             logger.warning(f"ASR 失败，降级为 B_ROLL: {asset.name}")
             asset.track_type = "B_ROLL"
+            asset.quality_status = "invalid_noise"
         
         # 5. 保存到数据库
         self._save_to_db(asset)
@@ -528,9 +689,22 @@ def _process_single_video(video_path: str, force_reprocess: bool, idx: int, tota
 
         logger.info(f"[{idx+1}/{total}] 处理: {Path(video_path).name}")
 
+        # 加载 VAD 参数
+        vad_params = None
+        try:
+            import yaml as yaml_module
+            config_path = Path(__file__).parent.parent / "config.yaml"
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml_module.safe_load(f)
+                if 'vad' in config:
+                    vad_params = config['vad']
+        except Exception:
+            pass
+        
         # 创建独立的处理器实例
         audio_processor = AudioProcessor()
-        asr_model = ASR()
+        asr_model = ASR(vad_params=vad_params)
 
         # 获取文件信息
         mtime = os.path.getmtime(video_path)
@@ -683,19 +857,62 @@ def _find_cue_offset_sync(segments: List[Dict], max_search_time: float = 3.0) ->
 
 
 # ============ 断点续传检查 ============
-def should_reprocess(video_path: str, db: Database) -> bool:
+def should_reprocess(video_path: str, db: Database, force_reprocess: bool = False) -> bool:
     """
     检查素材是否需要重新处理
     
     Args:
         video_path: 视频文件路径
         db: Database 实例
+        force_reprocess: 是否强制重新处理
         
     Returns:
         True 表示需要重新处理
     """
+    if force_reprocess:
+        logger.info(f"Force reprocess: {video_path}")
+        return True
+    
+    # 1. 检查文件修改时间
     current_mtime = os.path.getmtime(video_path)
-    return not db.check_asset_fresh(video_path, current_mtime)
+    if not db.check_asset_fresh(video_path, current_mtime):
+        return True
+    
+    # 2. 增强缓存一致性检查：检查配置版本
+    try:
+        from core.logic_filter import LogicFilter
+        session = db.get_session()
+        asset = session.query(Asset).filter_by(file_path=video_path).first()
+        
+        if asset:
+            # 检查配置版本
+            transcript = asset.transcript_json
+            if transcript:
+                import json
+                data = json.loads(transcript)
+                cached_config_version = data.get("config_version", "0")
+                current_config_version = LogicFilter.get_config_version()
+                
+                if cached_config_version != current_config_version:
+                    logger.info(
+                        f"Config version mismatch for {video_path}: "
+                        f"cached={cached_config_version}, current={current_config_version}"
+                    )
+                    return True
+                    
+                # 检查关键参数是否变化
+                key_params = ['min_text_length', 'min_confidence', 'dedup_similarity_threshold']
+                for param in key_params:
+                    cached_val = data.get(param)
+                    current_val = LogicFilter.DEFAULT_CONFIG.get(param)
+                    if cached_val != current_val:
+                        logger.info(f"Config parameter changed: {param}")
+                        return True
+                        
+    except Exception as e:
+        logger.warning(f"Cache consistency check failed: {e}")
+    
+    return False
 
 
 if __name__ == "__main__":

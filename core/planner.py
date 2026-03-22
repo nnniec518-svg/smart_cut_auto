@@ -173,6 +173,9 @@ class SequencePlanner:
         self.db = db
         self.model = embedding_model or EmbeddingModel()
         
+        # ============ 加载配置 ============
+        self._load_config()
+        
         # ============ 状态机维护 ============
         self.used_video_ids: set = set()  # 已使用的视频ID
         self.last_match: Dict = {         # 上一个匹配结果
@@ -184,6 +187,28 @@ class SequencePlanner:
         # 加载素材数据
         self.materials_cache: Dict[str, Dict] = {}
         self._load_materials()
+    
+    def _load_config(self):
+        """从配置文件加载参数"""
+        try:
+            import yaml
+            config_path = Path(__file__).parent.parent / "config.yaml"
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                
+                # 物理安全边界
+                if 'filter' in config:
+                    self.MIN_CLIP_DURATION = config['filter'].get('min_final_duration', 0.4)
+                else:
+                    self.MIN_CLIP_DURATION = 0.4
+                    
+                logger.info(f"Loaded MIN_CLIP_DURATION: {self.MIN_CLIP_DURATION}")
+            else:
+                self.MIN_CLIP_DURATION = 0.4
+        except Exception as e:
+            logger.warning(f"Failed to load config: {e}")
+            self.MIN_CLIP_DURATION = 0.4
     
     def _load_materials(self):
         """从数据库加载素材信息"""
@@ -661,6 +686,43 @@ class SequencePlanner:
                 end_with_offset = round(best_candidate["end"] + best_candidate.get("valid_offset", 0), 3)
                 clip_duration = round(end_with_offset - start_with_offset, 3)
 
+                # ===== 物理安全边界校验 =====
+                min_duration = getattr(self, 'MIN_CLIP_DURATION', 0.4)
+                if clip_duration < min_duration:
+                    logger.warning(
+                        f"跳过片段 {best_candidate['video_name']}: "
+                        f"时长不足 ({clip_duration:.2f}s < {min_duration}s)"
+                    )
+                    # 尝试使用整个素材（不加偏移）
+                    start_fallback = best_candidate["start"]
+                    end_fallback = best_candidate["end"]
+                    clip_duration_fallback = round(end_fallback - start_fallback, 3)
+                    
+                    if clip_duration_fallback >= min_duration:
+                        start_with_offset = start_fallback
+                        end_with_offset = end_fallback
+                        clip_duration = clip_duration_fallback
+                        logger.info(f"使用完整素材替代: {clip_duration:.2f}s")
+                    else:
+                        # 时长仍然不足，跳过此文案
+                        logger.warning(f"素材时长不足，跳过文案: {sentence[:20]}...")
+                        # 尝试 B_ROLL 兜底
+                        b_match = self._match_b_roll(sentence)
+                        if b_match:
+                            final_edl.append({
+                                "video_path": b_match["video_path"],
+                                "video_id": b_match["video_id"],
+                                "start": b_match["start"],
+                                "end": b_match["end"],
+                                "text": sentence,
+                                "matched_text": b_match.get("text", ""),
+                                "similarity": b_match.get("similarity", 0),
+                                "track_type": "B_ROLL",
+                                "is_b_roll": True,
+                                "reason": "duration_fallback"
+                            })
+                        continue
+
                 final_edl.append({
                     "video_path": best_candidate["video_path"],
                     "video_id": best_candidate["video_id"],
@@ -693,6 +755,13 @@ class SequencePlanner:
                 if b_match:
                     start_with_offset = b_match["start"] + b_match.get("valid_offset", 0)
                     end_with_offset = b_match["end"] + b_match.get("valid_offset", 0)
+                    
+                    # B_ROLL 也需要安全边界检查
+                    clip_duration = end_with_offset - start_with_offset
+                    min_duration = getattr(self, 'MIN_CLIP_DURATION', 0.4)
+                    if clip_duration < min_duration:
+                        logger.warning(f"跳过 B_ROLL {b_match['video_name']}: 时长不足 ({clip_duration:.2f}s)")
+                        continue
                     
                     final_edl.append({
                         "video_path": b_match["video_path"],

@@ -16,6 +16,11 @@ try:
 except ImportError:
     nr = None
 
+try:
+    import torchaudio
+except ImportError:
+    torchaudio = None
+
 logger = logging.getLogger("smart_cut")
 
 # 项目根目录
@@ -150,87 +155,97 @@ class AudioProcessor:
             语音段列表 [(start_sec, end_sec), ...]
         """
         if self.vad_model is None:
-            # 使用简单的能量检测
+            logger.warning("VAD模型未加载，使用能量检测")
             return self._energy_vad(audio, sr)
         
         try:
-            # 尝试使用 Silero VAD 的 get_speech_timestamps
+            # 准备音频数据 - 确保格式正确
             audio = audio.astype(np.float32)
+            # 归一化到 [-1, 1]
+            if audio.max() > 1.0:
+                audio = audio / 32768.0
             
-            # 转换为tensor
+            # 转换为tensor，确保格式正确
             audio_tensor = torch.from_numpy(audio).float()
             if audio_tensor.dim() == 1:
                 audio_tensor = audio_tensor.unsqueeze(0)
             
-            # 获取语音段 - 使用锁保护多线程环境下的VAD调用
+            # 确保采样率正确
+            if sr != 16000 and torchaudio is not None:
+                logger.debug(f"重采样从 {sr} 到 16000")
+                resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+                audio_tensor = resampler(audio_tensor)
+                sr = 16000
+            elif sr != 16000:
+                # 使用 librosa 重采样
+                import torchaudio
+                audio_np = audio_tensor.squeeze().numpy()
+                audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
+                audio_tensor = torch.from_numpy(audio_np).float().unsqueeze(0)
+                sr = 16000
+            
+            # 获取语音段
             self.vad_model.eval()
             speech_timestamps = []
             
             with torch.no_grad():
-                # 方法1: 尝试直接导入 silero_vad 的 get_speech_timestamps
+                # 方法1: 优先尝试使用 silero_vad 包的 get_speech_timestamps
                 try:
                     from silero_vad import get_speech_timestamps
                     with self._vad_lock:
                         speech_timestamps = get_speech_timestamps(
                             audio_tensor,
                             self.vad_model,
-                            sampling_rate=sr
+                            sampling_rate=sr,
+                            return_seconds=True
                         )
-                except ImportError:
-                    # silero_vad 包未安装，尝试使用模型内置方法
+                    logger.debug(f"Silero VAD 成功检测到 {len(speech_timestamps)} 个语音段")
+                except Exception as e1:
+                    # 方法2: 尝试模型内置方法 (旧版 Silero VAD)
                     try:
-                        # Silero VAD 模型内置方法
                         with self._vad_lock:
-                            speech_timestamps = self.vad_model(audio_tensor)
-                            # 转换为列表格式
-                            if hasattr(speech_timestamps, 'cpu'):
-                                speech_timestamps = speech_timestamps.cpu().numpy()
+                            result = self.vad_model(audio_tensor)
+                            # 处理不同格式的结果
+                            if hasattr(result, 'cpu'):
+                                result = result.cpu().numpy()
+                            if isinstance(result, list) and len(result) > 0:
+                                speech_timestamps = result
+                            elif hasattr(result, '__iter__'):
+                                speech_timestamps = list(result)
+                        logger.debug(f"Silero VAD 模型调用返回 {len(speech_timestamps)} 个结果")
                     except Exception as e2:
-                        logger.warning(f"VAD 方法1失败: {e2}")
-                        speech_timestamps = []
-
-                # 方法2: 如果方法1失败，尝试使用 model.forward
-                if not speech_timestamps:
-                    try:
-                        with self._vad_lock:
-                            # 尝试使用模型直接推理
-                            speech_timestamps = self.vad_model(audio_tensor)
-                            if hasattr(speech_timestamps, 'cpu'):
-                                speech_timestamps = speech_timestamps.cpu().numpy()
-                    except Exception as e3:
-                        logger.warning(f"VAD 方法2失败: {e3}")
+                        logger.warning(f"Silero VAD 调用失败: {e1}, {e2}")
             
-            if speech_timestamps:
-                # 处理不同格式的输出
+            # 处理结果
+            if speech_timestamps and len(speech_timestamps) > 0:
                 segments = []
                 try:
-                    # 格式1: 字典列表 [{"start": ..., "end": ...}, ...]
-                    if isinstance(speech_timestamps, (list, tuple)) and len(speech_timestamps) > 0:
-                        if isinstance(speech_timestamps[0], dict):
-                            segments = [(s["start"] / sr, s["end"] / sr) for s in speech_timestamps]
-                        # 格式2: numpy 数组或 tensor
-                        elif hasattr(speech_timestamps, '__iter__'):
-                            # 尝试直接使用
-                            for s in speech_timestamps:
-                                if hasattr(s, 'start') and hasattr(s, 'end'):
-                                    segments.append((s.start / sr, s.end / sr))
+                    for item in speech_timestamps:
+                        if isinstance(item, dict):
+                            start = item.get("start", item.get("beg", 0))
+                            end = item.get("end", item.get("end", 0))
+                            segments.append((float(start), float(end)))
+                        elif hasattr(item, "start") and hasattr(item, "end"):
+                            segments.append((float(item.start), float(item.end)))
+                        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                            segments.append((float(item[0]), float(item[1])))
                 except Exception as e:
                     logger.warning(f"VAD 结果解析失败: {e}")
-
+                
                 if segments:
-                    logger.debug(f"VAD detected {len(segments)} speech segments")
+                    logger.debug(f"VAD 解析得到 {len(segments)} 个片段")
                     return segments
             
-            # 所有方法都失败，使用能量检测
-            logger.warning("Silero VAD 不可用，降级使用能量检测VAD")
-            raise Exception("Silero VAD 不可用")
+            # 使用能量检测补充
+            logger.debug("Silero VAD 未检测到语音段，使用能量检测")
+            return self._energy_vad(audio, sr)
         
         except Exception as e:
-            logger.warning(f"VAD处理失败: {e}，降级使用能量检测")
+            logger.warning(f"VAD处理异常: {type(e).__name__}: {e}")
             return self._energy_vad(audio, sr)
     
-    def _energy_vad(self, audio: np.ndarray, sr: int, threshold: float = 0.005) -> List[Tuple[float, float]]:
-        """简单的能量检测VAD"""
+    def _energy_vad(self, audio: np.ndarray, sr: int, threshold: float = 0.01) -> List[Tuple[float, float]]:
+        """简单的能量检测VAD（提高阈值以过滤底噪）"""
         # 计算短时能量
         frame_length = int(0.025 * sr)  # 25ms帧
         hop_length = int(0.010 * sr)    # 10ms hop

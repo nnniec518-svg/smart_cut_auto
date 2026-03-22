@@ -12,6 +12,71 @@ models:
   # 降级模型（可选）
   fallback_embedding: "sentence-transformers/all-MiniLM-L6-v2"
 
+# ==================== VAD 参数配置 ====================
+vad:
+  # 最大单段时长（毫秒），防止背景音连在一起
+  max_single_segment_time: 6000
+  
+  # 噪声阈值 (0-1)，越高越严格，过滤远处低能量人声
+  speech_noise_thres: 0.6
+  
+  # 合并段长度（毫秒）
+  merge_length: 1500
+  
+  # chunk大小（毫秒）
+  chunk_size: 200
+
+# ==================== 通用 A-Roll 评分系统配置 ====================
+evaluator:
+  # 评分权重
+  score_weights:
+    vad_ratio: 0.40             # VAD 占比权重
+    energy: 0.30               # 能量得分权重
+    length: 0.30               # 长度得分权重
+  
+  # 阈值设置
+  min_score: 0.65             # 最低入围分数
+  min_text_length: 3          # 最少文字数
+  min_text_duration: 0.5      # 最少文字时长(秒)
+  min_final_duration: 0.4     # 最小最终时长(秒)
+  min_audio_db: -45           # 最低音频分贝
+  
+  # 语义去重
+  dedup_similarity_threshold: 0.85   # 相似度阈值
+  dedup_min_score: 0.65       # 参与去重的最低分数
+  
+  # 能量归一化参数
+  energy_min_db: -50          # -50dB = 0分
+  energy_max_db: -10          # -10dB = 100分
+  
+  # 缓存配置
+  config_version: "2.0"        # 配置版本 (变更需重算)
+
+# ==================== 逻辑过滤配置 (兼容旧版) ====================
+filter:
+  # 双重阈值过滤
+  min_text_length: 3           # 最少文字数
+  min_confidence: 0.8          # 最低置信度
+  max_no_speech_prob: 0.5      # 最大无语音概率
+  
+  # 语义去重
+  dedup_similarity_threshold: 0.8  # 相似度阈值
+  
+  # 物理安全边界
+  min_final_duration: 0.4      # 最小最终时长(秒)
+  
+  # A/B Roll 打分权重
+  score_weights:
+    text_length: 0.30          # 文本长度权重
+    confidence: 0.40           # 置信度权重
+    audio_energy: 0.30         # 音频能量权重
+  
+  # A-Roll 入围分数
+  a_roll_threshold: 80
+  
+  # 配置版本
+  config_version: "2.0"
+
 # ==================== 数据库配置 ====================
 database:
   # SQLite 数据库路径
@@ -57,8 +122,8 @@ render:
 
 # ==================== 素材分类阈值 ====================
 classification:
-  # 静音阈值 (dB)
-  silence_threshold: -50
+  # 静音阈值 (dB) - 提高以过滤底噪伪口播
+  silence_threshold: -40
   
   # A_ROLL 最小相似度阈值
   a_roll_threshold: 0.3
@@ -103,8 +168,8 @@ cue_words:
   # 最大搜索时间（秒）
   max_search_time: 3.0
   
-  # 安全缓冲时间（秒）
-  buffer_sec: 0.2
+  # 安全缓冲时间（秒）- 减小以防止片段被切碎
+  buffer_sec: 0.1
 
 # ==================== B-Roll 关键词 ====================
 b_roll_keywords:

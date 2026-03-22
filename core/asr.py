@@ -21,13 +21,24 @@ MODELS_DIR = PROJECT_ROOT / "models"
 class ASR:
     """语音识别器 - 使用FunASR + DirectML"""
     
-    def __init__(self, model_size: str = "paraformer-zh", device: Optional[str] = None):
+    # 默认 VAD 参数
+    DEFAULT_VAD_PARAMS = {
+        "max_single_segment_time": 6000,
+        "speech_noise_thres": 0.6,
+        "merge_length": 1500,
+        "chunk_size": 200,
+        "use_vad": True
+    }
+    
+    def __init__(self, model_size: str = "paraformer-zh", device: Optional[str] = None,
+                 vad_params: Optional[dict] = None):
         """
         初始化ASR
         
         Args:
             model_size: FunASR模型名称
             device: 运行设备，None则自动选择 DirectML
+            vad_params: VAD参数 dict
         """
         self.model_size = model_size
         
@@ -37,12 +48,18 @@ class ASR:
             self.device = "cpu"
         else:
             self.device = device
+        
+        # VAD 参数
+        self.vad_params = {**self.DEFAULT_VAD_PARAMS}
+        if vad_params:
+            self.vad_params.update(vad_params)
             
         self.model = None
         self._model_lock = threading.Lock()  # 线程锁，保护模型调用
         self._ensure_models_dir()
         self._load_model()
         logger.info(f"ASR initialized with FunASR model: {model_size}, device: {self.device}")
+        logger.info(f"VAD params: {self.vad_params}")
     
     def _ensure_models_dir(self) -> None:
         """确保模型目录存在"""
@@ -105,11 +122,14 @@ class ASR:
             # 使用锁保护多线程环境下的模型调用
             with self._model_lock:
                 # FunASR直接处理文件路径
-                result = self.model.generate(
-                    input=str(audio_path),
-                    batch_size_s=300,
-                    hotword=""
-                )
+                # 合并 VAD 参数
+                gen_params = {
+                    "input": str(audio_path),
+                    "batch_size_s": 300,
+                    "hotword": "",
+                    **self.vad_params
+                }
+                result = self.model.generate(**gen_params)
             
             # 调试：打印原始结果
             logger.info(f"ASR raw result for {audio_path}: {result[:1] if isinstance(result, list) else result}")

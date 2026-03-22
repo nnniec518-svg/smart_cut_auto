@@ -48,6 +48,15 @@ class Asset(Base):
     # 向量嵌入 (存储为 JSON 字符串，用于快速相似度计算)
     embedding_vector = Column(Text, default="")
     
+    # ASR 置信度 (0-1)
+    asr_confidence = Column(Float, default=0.0)
+    
+    # A-Roll 打分 (0-100)
+    a_roll_score = Column(Float, default=0.0)
+    
+    # 片段质量标记: valid, invalid_noise, invalid_short, duplicate
+    quality_status = Column(String(20), default="valid")
+    
     # 时间戳
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

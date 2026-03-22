@@ -26,6 +26,7 @@ from core.processor import VideoPurifier
 from core.planner import SequencePlanner, EmbeddingModel
 from core.auto_cutter import VideoAutoCutter
 from core.hardware import init_device, get_device_info
+from core.assembler import Assembler
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -137,6 +138,11 @@ class SmartCutController:
             self.auto_cutter.TARGET_WIDTH = render_config.get("width", 1080)
             self.auto_cutter.TARGET_HEIGHT = render_config.get("height", 1920)
             self.auto_cutter.TARGET_FPS = render_config.get("fps", 30)
+        
+        # 初始化 Assembler（视频组装器）
+        if not hasattr(self, 'assembler'):
+            self.logger.info("初始化 Assembler...")
+            self.assembler = Assembler()
     
     def scan_materials(self, force_reprocess: bool = False) -> dict:
         """
@@ -236,7 +242,16 @@ class SmartCutController:
         self._init_components()
         
         # 执行规划
-        edl = self.planner.plan(script)
+        raw_edl = self.planner.plan(script)
+        
+        # 使用 Assembler 进行排序、去重、择优
+        self.logger.info("执行排序、去重、择优...")
+        edl = self.assembler.assemble(
+            raw_edl, 
+            script=script,
+            apply_dedup=True,
+            apply_sequence_guard=True
+        )
         
         # 打印结果
         self._print_edl(edl)
@@ -396,7 +411,8 @@ def main():
             return
     else:
         # 默认完整文案（美的京东315活动）
-        script = """不用确定我们京东315活动3C、家电政府补贴至高15%，还能跟美的代金券叠加使用
+        script = """你确定
+不用确定我们京东315活动3C、家电政府补贴至高15%，还能跟美的代金券叠加使用
 我再问一下
 不用问,美的四大权益都可以享受
 权益一
