@@ -1,0 +1,71 @@
+素材数量: 20
+分析: IMG_8706
+  无缓存，跳过
+分析: IMG_8707
+  无缓存，跳过
+分析: IMG_8708
+  无缓存，跳过
+分析: IMG_8709
+  无缓存，跳过
+分析: IMG_8710
+  无缓存，跳过
+分析: IMG_8728
+  无缓存，跳过
+分析: IMG_8733
+  无缓存，跳过
+分析: IMG_8734
+  无缓存，跳过
+分析: IMG_8739
+  无缓存，跳过
+分析: IMG_8741
+  无缓存，跳过
+分析: IMG_8743
+  无缓存，跳过
+分析: IMG_8749
+  无缓存，跳过
+分析: IMG_8754
+  无缓存，跳过
+分析: IMG_8757
+  无缓存，跳过
+分析: IMG_8758
+  无缓存，跳过
+分析: IMG_8764
+  无缓存，跳过
+分析: IMG_8804
+  无缓存，跳过
+分析: IMG_8805
+  无缓存，跳过
+分析: IMG_8806
+  无缓存，跳过
+分析: IMG_8807
+  无缓存，跳过
+
+总素材句子数: 0
+
+初始化Matcher...
+加载模型失败: module 'torch.distributed' has no attribute 'is_initialized'
+Matcher initialized with model: all-MiniLM-L6-v2
+文案句子数: 26
+
+测试修复后的相似度计算:
+目标: 全屋智能家电套购
+ASR: 全 益 一 全 屋 智 能 家 电 套 购
+相似度: 0.000
+
+目标: 送至高1499元豪礼
+ASR: 送 志 高 送 志 高 一 九 九 九 元 好 礼
+相似度: 0.000
+
+目标: 美的四大权益都可以享受
+ASR: 我 再 问 一 下 不 用 问 美 的 四 大 权 益 都 可 以 享 受
+相似度: 0.000
+
+执行文案匹配:
+有效素材数: 0
+Traceback (most recent call last):
+  File "c:\Users\nnniec\Program\smart_cut_auto\test_matching_fix.py", line 146, in <module>
+    main()
+  File "c:\Users\nnniec\Program\smart_cut_auto\test_matching_fix.py", line 121, in main
+    matched = matcher._greedy_sentence_matching(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: Matcher._greedy_sentence_matching() got an unexpected keyword argument 'single_threshold'

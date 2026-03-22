@@ -1,0 +1,128 @@
+============================================================
+完整流程测试
+============================================================
+
+[Step 1] 导入模块...
+[OK] VideoAutoCutter
+
+[Step 2] 创建控制器...
+[OK] VideoAutoCutter created
+
+[Step 3] 扫描素材...
+素材扫描完成: A_ROLL=194, B_ROLL=8
+
+[Step 4] 执行文案匹配...
+
+[FAIL] 测试失败: Cannot set version_counter for inference tensor
+Traceback (most recent call last):
+  File "c:\Users\nnniec\Program\smart_cut_auto\core\planner.py", line 108, in encode
+    embeddings = self.model.encode(
+                 ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\SentenceTransformer.py", line 1112, in encode
+    out_features = self.forward(features, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\SentenceTransformer.py", line 1193, in forward
+    input = module(input, **module_kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\models\Transformer.py", line 317, in forward
+    outputs = self.auto_model(**trans_features, **kwargs, return_dict=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\utils\generic.py", line 917, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\utils\output_capturing.py", line 253, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\models\bert\modeling_bert.py", line 680, in forward
+    embedding_output = self.embeddings(
+                       ^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\models\bert\modeling_bert.py", line 88, in forward
+    position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
+                   ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Cannot set version_counter for inference tensor
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "c:\Users\nnniec\Program\smart_cut_auto\test_full_flow.py", line 62, in <module>
+    edl = cutter.plan(SCRIPT)
+          ^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\nnniec\Program\smart_cut_auto\core\auto_cutter.py", line 215, in plan
+    edl = self.planner.plan(script_text)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\nnniec\Program\smart_cut_auto\core\planner.py", line 491, in plan
+    candidates = self._retrieve_candidates(sentence, a_roll_candidates, top_k=10)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\nnniec\Program\smart_cut_auto\core\planner.py", line 337, in _retrieve_candidates
+    target_vec = self.model.encode([target_text])
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\nnniec\Program\smart_cut_auto\core\planner.py", line 122, in encode
+    return self._fallback_encode(texts, batch_size)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\nnniec\Program\smart_cut_auto\core\planner.py", line 135, in _fallback_encode
+    embeddings = self.model.encode(
+                 ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\utils\_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\SentenceTransformer.py", line 1112, in encode
+    out_features = self.forward(features, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\SentenceTransformer.py", line 1193, in forward
+    input = module(input, **module_kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\models\Transformer.py", line 317, in forward
+    outputs = self.auto_model(**trans_features, **kwargs, return_dict=True)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\utils\generic.py", line 917, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\utils\output_capturing.py", line 253, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\models\bert\modeling_bert.py", line 680, in forward
+    embedding_output = self.embeddings(
+                       ^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1553, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\torch\nn\modules\module.py", line 1562, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nnniec\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\models\bert\modeling_bert.py", line 88, in forward
+    position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
+                   ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Cannot set version_counter for inference tensor

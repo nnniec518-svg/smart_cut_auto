@@ -1,0 +1,152 @@
+# 智能剪辑系统配置文件
+# smart_cut_auto config.yaml
+
+# ==================== 模型配置 ====================
+models:
+  # FunASR 模型路径
+  asr_model: "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+  
+  # BGE-M3 向量模型
+  embedding_model: "BAAI/bge-m3"
+  
+  # 降级模型（可选）
+  fallback_embedding: "sentence-transformers/all-MiniLM-L6-v2"
+
+# ==================== 数据库配置 ====================
+database:
+  # SQLite 数据库路径
+  path: "storage/materials.db"
+  
+  # 断点续传：mtime 匹配容差（秒）
+  mtime_tolerance: 1.0
+
+# ==================== 素材目录配置 ====================
+paths:
+  # 原始素材文件夹
+  raw_folder: "storage/materials-all"
+  
+  # 输出目录
+  output_dir: "temp"
+  
+  # 日志目录
+  logs_dir: "logs"
+
+# ==================== FFmpeg 渲染参数 ====================
+render:
+  # 目标分辨率
+  width: 1080
+  height: 1920
+  
+  # 目标帧率
+  fps: 30
+  
+  # 音频采样率
+  sample_rate: 44100
+  
+  # 视频编码器
+  video_codec: "libx264"
+  
+  # 编码质量 (CRF, 数值越小质量越高)
+  crf: 18
+  
+  # 音频码率
+  audio_bitrate: "128k"
+  
+  # 淡入淡出时长（秒）
+  crossfade_duration: 0.2
+
+# ==================== 素材分类阈值 ====================
+classification:
+  # 静音阈值 (dB)
+  silence_threshold: -50
+  
+  # A_ROLL 最小相似度阈值
+  a_roll_threshold: 0.3
+  
+  # B_ROLL 最小相似度阈值
+  b_roll_threshold: 0.1
+
+# ==================== 匹配惩罚参数 ====================
+matching:
+  # 非连续重复惩罚
+  penalty_repeat: 0.8
+  
+  # 时间倒流惩罚
+  penalty_time_reverse: 1.0
+  
+  # 顺序保持奖励
+  reward_sequence: 0.2
+
+# ==================== 开拍提示词正则 ====================
+cue_words:
+  # 用于检测 321、开始、action 等提示词
+  patterns:
+    - "一"
+    - "二"
+    - "三"
+    - "四"
+    - "五"
+    - "1"
+    - "2"
+    - "3"
+    - "4"
+    - "5"
+    - "走"
+    - "开始"
+    - "准备"
+    - "action"
+    - "咔"
+    - "好的"
+    - "321"
+    - "三二一"
+  
+  # 最大搜索时间（秒）
+  max_search_time: 3.0
+  
+  # 安全缓冲时间（秒）
+  buffer_sec: 0.2
+
+# ==================== B-Roll 关键词 ====================
+b_roll_keywords:
+  - "空镜头"
+  - "空镜"
+  - "风景"
+  - "景色"
+  - "环境"
+  - "画面"
+  - "场景"
+  - "外景"
+  - "室内"
+  - "办公室"
+  - "产品"
+  - "商品"
+  - "展示"
+  - "演示"
+  - "背景"
+  - "氛围"
+  - "街头"
+  - "道路"
+  - "建筑"
+  - "自然"
+  - "城市"
+  - "乡村"
+  - "海边"
+  - "山景"
+  - "花"
+  - "草"
+  - "树"
+  - "天空"
+  - "云"
+  - "日出"
+  - "日落"
+  - "夜景"
+  - "灯光"
+  - "特写"
+  - "远景"
+  - "全景"
+
+# ==================== 日志配置 ====================
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/smart_cut.log"

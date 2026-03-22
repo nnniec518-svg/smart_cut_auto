@@ -1,0 +1,32 @@
+# 模型目录（本地缓存）
+models/
+models/*
+
+# 临时文件
+temp/
+temp/*
+logs/
+logs/*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 配置（包含用户设置）
+config/settings.json
