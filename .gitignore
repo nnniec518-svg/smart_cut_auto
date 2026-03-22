@@ -30,3 +30,12 @@ Thumbs.db
 
 # 配置（包含用户设置）
 config/settings.json
+
+# 素材视频文件（太大）
+storage/*.mov
+storage/*.MOV
+storage/*.mp4
+storage/*.db
+
+# 测试输出
+*.mp4
