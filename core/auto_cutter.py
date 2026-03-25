@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 
+from core.config import config
+
 logger = logging.getLogger("smart_cut")
 
 # 项目根目录
@@ -260,22 +262,25 @@ class VideoAutoCutter:
         logger.info(f"总计: {len(edl)} | A_ROLL: {a_count} | B_ROLL: {b_count} | 缺失: {missing_count}")
     
     def render(self, edl: List[Dict], output_name: str = "final_output.mp4",
-               use_crossfade: bool = True, crossfade_duration: float = 0.2) -> bool:
+               use_crossfade: bool = False, crossfade_duration: float = 0.2,
+               enable_overlay: bool = None) -> bool:
         """
-        FFmpeg 物理合成 - 优化版
-        
+        FFmpeg 物理合成 - 优化版（支持画中画）
+
         特性：
         1. 分段导出为 .ts 格式
         2. 统一分辨率、帧率、采样率
         3. 支持音频淡入淡出（消除剪辑点爆音）
         4. 使用 concat 协议合并
-        
+        5. 支持画中画叠加（B_ROLL 以小窗形式叠加到主轨）
+
         Args:
             edl: 剪辑列表
             output_name: 输出文件名
             use_crossfade: 是否使用音频淡入淡出
             crossfade_duration: 淡入淡出时长（秒）
-            
+            enable_overlay: 是否启用画中画叠加（None时从配置读取）
+
         Returns:
             是否成功
         """
@@ -283,17 +288,76 @@ class VideoAutoCutter:
         logger.info("=" * 60)
         logger.info("Step 3: FFmpeg 物理合成")
         logger.info("=" * 60)
-        
+
+        # 从配置读取画中画设置
+        overlay_config = config.get("overlay", {})
+        config_enable_overlay = overlay_config.get("enabled", False)
+
+        # 如果未明确指定，使用配置值
+        if enable_overlay is None:
+            enable_overlay = config_enable_overlay
+
         # 过滤有效片段
         valid_clips = [c for c in edl if not c.get("missing") and c.get("video_path")]
+
+        # 分离主轨和画中画
+        main_clips = [c for c in valid_clips if c.get("track_type") != "B_ROLL"]
+        overlay_clips = [c for c in valid_clips if c.get("track_type") == "B_ROLL"]
+
+        logger.info(f"主轨片段: {len(main_clips)}, 画中画片段: {len(overlay_clips)}")
+        logger.info(f"画中画设置: {'启用' if enable_overlay else '禁用'}")
+
+        if enable_overlay and overlay_clips and main_clips:
+            return self._render_with_overlay(
+                main_clips,
+                overlay_clips,
+                output_name,
+                use_crossfade,
+                crossfade_duration
+            )
         
         if not valid_clips:
             logger.error("没有有效的剪辑片段")
             return False
-        
+
         logger.info(f"合成 {len(valid_clips)} 个片段...")
         logger.info(f"参数: 分辨率={self.TARGET_WIDTH}x{self.TARGET_HEIGHT}, "
                    f"帧率={self.TARGET_FPS}fps, 淡入淡出={use_crossfade}")
+
+        # 步骤1: 分段导出为 ts 格式
+        temp_clips = []
+
+        for i, clip in enumerate(valid_clips):
+            video_path = clip["video_path"]
+            # 关键：start 已经包含了 valid_offset，使用 round 避免浮点误差
+            start = round(clip["start"], 3)
+            end = round(clip["end"], 3)
+            duration = round(end - start, 3)
+
+            if duration <= 0:
+                logger.warning(f"片段 {i} 时长为 0，跳过")
+                continue
+
+            # 输出临时 ts 文件
+            temp_file = self.output_dir / f"segment_{i:03d}.ts"
+            temp_clips.append(temp_file)
+
+            logger.info(f"  [{i+1}/{len(valid_clips)}] 转码: {Path(video_path).name} "
+                      f"({start:.3f}s - {end:.3f}s, 时长: {duration:.3f}s)")
+
+            # 统一参数转码为 ts 格式
+            success = self._transcode_to_ts(
+                video_path,
+                str(temp_file),
+                start,
+                duration,
+                add_fade=(use_crossfade and duration > crossfade_duration * 2),
+                fade_duration=crossfade_duration
+            )
+
+            if not success:
+                logger.error(f"转码失败: {video_path}")
+                return False
         
         # 步骤1: 分段导出为 ts 格式
         temp_clips = []
@@ -352,7 +416,150 @@ class VideoAutoCutter:
             logger.info(f"输出文件大小: {output_path.stat().st_size / 1024 / 1024:.2f} MB")
         
         return success
-    
+
+    def _render_with_overlay(self, main_clips: List[Dict], overlay_clips: List[Dict],
+                          output_name: str, use_crossfade: bool, crossfade_duration: float) -> bool:
+        """
+        渲染带画中画叠加的视频
+
+        Args:
+            main_clips: 主轨片段（A_ROLL）
+            overlay_clips: 画中画片段（B_ROLL）
+            output_name: 输出文件名
+            use_crossfade: 是否使用淡入淡出
+            crossfade_duration: 淡入淡出时长
+
+        Returns:
+            是否成功
+        """
+        logger.info("启用画中画叠加模式")
+
+        # 1. 合成主轨视频
+        logger.info(f"合成主轨: {len(main_clips)} 个片段...")
+        temp_main = self.output_dir / "temp_main.ts"
+        temp_clips = []
+
+        for i, clip in enumerate(main_clips):
+            video_path = clip["video_path"]
+            start = round(clip["start"], 3)
+            end = round(clip["end"], 3)
+            duration = round(end - start, 3)
+
+            if duration <= 0:
+                continue
+
+            temp_file = self.output_dir / f"main_{i:03d}.ts"
+            temp_clips.append(temp_file)
+
+            success = self._transcode_to_ts(
+                video_path,
+                str(temp_file),
+                start,
+                duration,
+                add_fade=(use_crossfade and duration > crossfade_duration * 2),
+                fade_duration=crossfade_duration
+            )
+
+            if not success:
+                return False
+
+        # 拼接主轨
+        if not self._concat_ts_protocol(temp_clips, str(temp_main)):
+            return False
+
+        # 2. 计算主轨时间轴
+        main_timeline = []
+        current_time = 0.0
+        for clip in main_clips:
+            duration = round(clip["end"] - clip["start"], 3)
+            main_timeline.append({
+                "clip": clip,
+                "start": current_time,
+                "end": current_time + duration
+            })
+            current_time += duration
+
+        # 3. 构建画中画叠加命令
+        logger.info(f"添加 {len(overlay_clips)} 个画中画...")
+        output_path = self.output_dir / output_name
+
+        # 获取画中画配置
+        overlay_config = config.get("overlay", {})
+        position = overlay_config.get("position", "bottom-right")
+        scale = overlay_config.get("scale", 0.3)
+        margin = overlay_config.get("margin", 10)
+
+        # 计算画中画尺寸
+        overlay_width = int(self.TARGET_WIDTH * float(scale))
+        overlay_height = int(self.TARGET_HEIGHT * float(scale))
+
+        # 计算位置坐标
+        if position == "bottom-right":
+            x = self.TARGET_WIDTH - overlay_width - int(margin)
+            y = self.TARGET_HEIGHT - overlay_height - int(margin)
+        elif position == "bottom-left":
+            x = int(margin)
+            y = self.TARGET_HEIGHT - overlay_height - int(margin)
+        elif position == "top-right":
+            x = self.TARGET_WIDTH - overlay_width - int(margin)
+            y = int(margin)
+        elif position == "top-left":
+            x = int(margin)
+            y = int(margin)
+        else:
+            x = self.TARGET_WIDTH - overlay_width - int(margin)
+            y = self.TARGET_HEIGHT - overlay_height - int(margin)
+
+        # 4. 简化：只为第一个 B_ROLL 添加画中画
+        if overlay_clips:
+            overlay_clip = overlay_clips[0]
+            video_path = overlay_clip["video_path"]
+            start = round(overlay_clip["start"], 3)
+            end = round(overlay_clip["end"], 3)
+            duration = round(end - start, 3)
+
+            # 构建 FFmpeg 命令：使用 overlay 滤镜
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', str(temp_main),  # 主轨
+                '-i', video_path,        # 画中画
+                '-filter_complex',
+                f"[1:v]scale={overlay_width}:{overlay_height}[pip];"
+                f"[0:v][pip]overlay={x}:{y}",
+                '-map', '[out:v]',
+                '-map', '0:a',  # 只使用主轨音频
+                '-c:v', 'libx264',
+                '-preset', 'superfast',
+                '-crf', '18',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-t', str(main_timeline[-1]["end"]) if main_timeline else '10',
+                str(output_path)
+            ]
+
+            # 执行命令
+            logger.info("执行画中画合成...")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                logger.error(f"画中画合成失败: {result.stderr}")
+                # 回退到普通模式
+                return self._concat_ts_protocol(temp_clips, str(output_path))
+
+            # 清理临时文件
+            temp_main.unlink(missing_ok=True)
+            for temp_file in temp_clips:
+                temp_file.unlink(missing_ok=True)
+
+            logger.info(f"画中画合成完成: {output_path}")
+            logger.info(f"输出文件大小: {output_path.stat().st_size / 1024 / 1024:.2f} MB")
+
+            return True
+
+        # 没有 B_ROLL，使用普通合成
+        return self._concat_ts_protocol(temp_clips, str(output_path))
+
     def _transcode_to_ts(self, input_path: str, output_path: str,
                          start: float, duration: float,
                          add_fade: bool = False, fade_duration: float = 0.2) -> bool:
@@ -706,6 +913,6 @@ if __name__ == "__main__":
     cutter.close()
     
     if success:
-        print("\n视频生成成功!")
+        logger.info("\n视频生成成功!")
     else:
-        print("\n视频生成失败!")
+        logger.error("\n视频生成失败!")

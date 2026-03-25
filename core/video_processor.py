@@ -44,6 +44,26 @@ def _run_ffmpeg(cmd: List[str], timeout: int = 600) -> Tuple[int, str, str]:
         return -1, "", str(e)
 
 
+def _parse_fraction(fraction_str: str, default: float = 0.0) -> float:
+    """
+    安全解析分数字符串（如 "30/1"）为浮点数
+
+    Args:
+        fraction_str: 分数字符串
+        default: 解析失败时的默认值
+
+    Returns:
+        浮点数值
+    """
+    try:
+        if '/' in fraction_str:
+            numerator, denominator = fraction_str.split('/')
+            return float(numerator) / float(denominator)
+        return float(fraction_str)
+    except (ValueError, ZeroDivisionError, AttributeError):
+        return default
+
+
 def _get_video_info_ffmpeg(video_path: str) -> Dict[str, Any]:
     """使用ffprobe获取视频信息"""
     try:
@@ -56,12 +76,12 @@ def _get_video_info_ffmpeg(video_path: str) -> Dict[str, Any]:
             str(video_path)
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
-        
+
         if result.returncode != 0:
             return {}
-        
+
         data = json.loads(result.stdout)
-        
+
         video_stream = None
         audio_stream = None
         for stream in data.get('streams', []):
@@ -69,12 +89,12 @@ def _get_video_info_ffmpeg(video_path: str) -> Dict[str, Any]:
                 video_stream = stream
             elif stream.get('codec_type') == 'audio':
                 audio_stream = stream
-        
+
         info = {
             "duration": float(data.get('format', {}).get('duration', 0)),
             "width": int(video_stream.get('width', 0)) if video_stream else 0,
             "height": int(video_stream.get('height', 0)) if video_stream else 0,
-            "fps": eval(video_stream.get('r_frame_rate', '0/1')) if video_stream else 0,
+            "fps": _parse_fraction(video_stream.get('r_frame_rate', '0/1')) if video_stream else 0,
             "has_audio": audio_stream is not None,
             "video_codec": video_stream.get('codec_name', '') if video_stream else '',
             "audio_codec": audio_stream.get('codec_name', '') if audio_stream else '',
@@ -103,7 +123,6 @@ class VideoProcessor:
     
     def crop_video(self, input_path: str, output_path: str, 
                    start_time: float, end_time: float,
-                   valid_start_offset: float = 0.0,
                    add_fade: bool = False,
                    fade_duration: float = 0.5) -> bool:
         """
@@ -112,9 +131,8 @@ class VideoProcessor:
         Args:
             input_path: 输入视频路径
             output_path: 输出视频路径
-            start_time: 开始时间（秒）- 相对素材起点
+            start_time: 开始时间（秒）
             end_time: 结束时间（秒）
-            valid_start_offset: 有效起始偏移量（秒）- 从素材的哪个时间点开始是有效内容
             add_fade: 是否添加淡入淡出
             fade_duration: 淡入淡出时长
             
@@ -122,22 +140,19 @@ class VideoProcessor:
             是否成功
         """
         try:
-            # 应用有效起始偏移：从 original_start + offset 开始截取
-            actual_start_time = start_time + valid_start_offset
-            
             # 获取视频信息验证
             info = _get_video_info_ffmpeg(input_path)
             video_duration = info.get("duration", 0)
             
-            if actual_start_time >= video_duration:
-                logger.error(f"开始时间 {actual_start_time}s 超过视频时长 {video_duration}s")
+            if start_time >= video_duration:
+                logger.error(f"开始时间 {start_time}s 超过视频时长 {video_duration}s")
                 return False
             
             if end_time > video_duration:
                 logger.warning(f"结束时间 {end_time}s 超过视频时长 {video_duration}s，已调整为 {video_duration}s")
                 end_time = video_duration
             
-            duration = end_time - actual_start_time
+            duration = end_time - start_time
             if duration <= 0:
                 logger.error(f"Invalid duration: {duration}")
                 return False
@@ -147,8 +162,8 @@ class VideoProcessor:
             # 构建ffmpeg命令
             filters = []
             
-            # 1. 裁剪 - 从 original_start + offset 开始
-            filters.append(f"trim=start={actual_start_time}:end={end_time},setpts=PTS-STARTPTS")
+            # 1. 裁剪
+            filters.append(f"trim=start={start_time}:end={end_time},setpts=PTS-STARTPTS")
             
             # 2. 缩放和填充
             filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
@@ -294,7 +309,8 @@ class VideoProcessor:
             # 清理临时文件
             try:
                 os.unlink(list_file)
-            except:
+            except (OSError, FileNotFoundError):
+                # 临时文件可能已被删除，忽略错误
                 pass
             
             if returncode != 0:

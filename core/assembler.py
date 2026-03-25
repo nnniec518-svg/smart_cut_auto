@@ -5,6 +5,11 @@
 2. 多版本去重与择优 (select_best_version)
 3. 逻辑断句检查 (Sequence Guard)
 4. 排序和去重
+
+强化版特性（v2.0）：
+- 语义指纹去重（Levenshtein距离<3）
+- 全文对齐匹配
+- 强制末尾优先
 """
 import re
 import difflib
@@ -13,8 +18,158 @@ from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+import os
+import shutil
 
 logger = logging.getLogger("smart_cut")
+
+
+# ========== 辅助函数 ==========
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """
+    计算两个字符串的Levenshtein编辑距离
+    
+    Args:
+        s1: 字符串1
+        s2: 字符串2
+        
+    Returns:
+        编辑距离
+    """
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+    
+    if len(s2) == 0:
+        return len(s1)
+    
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    
+    return previous_row[-1]
+
+
+def extract_semantic_fingerprint(text: str) -> str:
+    """
+    提取语义指纹：去除标点、空格、助词，只保留核心词
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        语义指纹
+    """
+    # 去除标点和空格
+    cleaned = re.sub(r'[，。！？、；：""''【】（）\s，。！？、；：""''【】\(\)]', '', text)
+    
+    # 去除助词
+    particles = ['的', '了', '呢', '吧', '啊', '吗', '呀', '哦', '嘛', '呐', '哩', '咯']
+    for p in particles:
+        cleaned = cleaned.replace(p, '')
+    
+    return cleaned
+
+
+def check_cache_validity() -> bool:
+    """
+    检查缓存是否有效
+    
+    Returns:
+        True表示缓存有效，False表示需要清理
+    """
+    import yaml
+    
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    cache_version_file = Path(__file__).parent.parent / "temp" / "logic_version.txt"
+    
+    # 读取当前logic_version
+    if not config_path.exists():
+        return True
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    current_version = config.get("filter", {}).get("logic_version", "1.0")
+    
+    # 读取缓存的version
+    if cache_version_file.exists():
+        with open(cache_version_file, 'r', encoding='utf-8') as f:
+            cached_version = f.read().strip()
+        
+        if cached_version != current_version:
+            logger.warning(f"逻辑版本变化: {cached_version} -> {current_version}，需要清理缓存")
+            return False
+    
+    return True
+
+
+def force_clean_cache() -> None:
+    """
+    强制清理缓存：删除temp目录下的json文件和数据库
+    """
+    project_root = Path(__file__).parent.parent
+    temp_dir = project_root / "temp"
+    db_path = project_root / "storage" / "materials.db"
+
+    logger.info("=== 强制清理缓存 ===")
+
+    # 清理temp目录下的json文件
+    if temp_dir.exists():
+        for f in temp_dir.glob("*.json"):
+            f.unlink()
+            logger.info(f"  删除缓存: {f.name}")
+
+    # 清理数据库
+    if db_path.exists():
+        db_path.unlink()
+        logger.info(f"  删除数据库: {db_path.name}")
+
+    # 更新缓存的logic_version
+    import yaml
+    config_path = project_root / "config.yaml"
+    cache_version_file = temp_dir / "logic_version.txt"
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    current_version = config.get("filter", {}).get("logic_version", "1.0")
+
+    with open(cache_version_file, 'w', encoding='utf-8') as f:
+        f.write(current_version)
+
+    logger.info("=== 缓存清理完成 ===")
+
+
+def force_clean_sequence_cache() -> None:
+    """
+    仅清理序列缓存：删除temp目录下的json文件和文案哈希，保留素材数据库
+    用于文案变化时仅重新规划序列，不重新处理素材
+    """
+    project_root = Path(__file__).parent.parent
+    temp_dir = project_root / "temp"
+
+    logger.info("=== 强制清理序列缓存 ===")
+
+    # 清理temp目录下的json文件（sequence.json等）
+    if temp_dir.exists():
+        for f in temp_dir.glob("*.json"):
+            f.unlink()
+            logger.info(f"  删除序列缓存: {f.name}")
+
+    # 删除文案哈希缓存
+    script_hash_file = temp_dir / "script_hash.txt"
+    if script_hash_file.exists():
+        script_hash_file.unlink()
+        logger.info(f"  删除文案哈希缓存: {script_hash_file.name}")
+
+    logger.info("=== 序列缓存清理完成（素材数据库已保留）===")
 
 
 @dataclass
@@ -516,6 +671,662 @@ class Assembler:
             x.get("start", 0),
             x.get("original_index", 0)
         ))
+    
+    # ========== 6. 文案引导模式 (Script-Driven Assembly) ==========
+    
+    # 时间轴窗口偏移权重参数
+    WINDOW_SIZE = 3  # 窗口大小
+    POSITION_BONUS = 0.15  # 位置接近时的额外加分
+    
+    def script_driven_assembly(self, all_clips: List[Dict]) -> List[Dict]:
+        """
+        文案引导模式组装 - 核心功能（v2.0 强化版）
+        
+        流程：
+        1. 强制清理缓存：确保读取最新ASR结果
+        2. 提取"虚拟脚本线"：从所有A-Roll提取唯一句子构成逻辑脚本（语义指纹去重）
+        3. 按句索引择优：为每个脚本句子找到最佳素材
+        4. 唯一性锁定：入选素材立即打上USED标签，禁止后续句子回流
+        5. 强制末尾优先：必须选该台词在全片中【最后一次】出现的、且完整的版本
+        6. 强制线性拼接：按脚本顺序输出
+        7. 剪辑点自适应平滑：首部呼吸位 + 尾部淡出
+        
+        Args:
+            all_clips: 所有A-Roll素材列表
+            
+        Returns:
+            按文案逻辑顺序排列的片段列表
+        """
+        # 搜索阈值降至0.6，与extract_unique_sentences保持一致
+        MATCH_THRESHOLD = 0.6
+
+        if not all_clips:
+            return []
+
+        # ====== 硬核修改1: 强制清理缓存 ======
+        # 确保不再读取旧的ASR匹配结果
+        logger.info("=== 强制清理缓存 ===")
+        force_clean_cache()
+        logger.info("缓存已清理，开始执行文案引导模式\n")
+
+        # 0. 初始化：给所有素材打上is_picked=False
+        for clip in all_clips:
+            clip["is_picked"] = False
+        
+        # 1. 提取虚拟脚本线
+        script_skeleton = self.extract_unique_sentences(all_clips)
+        
+        if not script_skeleton:
+            logger.warning("未能从素材中提取出有效脚本，使用原始顺序")
+            return self.sort_by_timestamp(all_clips)
+        
+        logger.info(f"=== 文案引导模式（v2.0 强化版）===")
+        logger.info(f"提取到 {len(script_skeleton)} 个唯一句子作为脚本骨架")
+        
+        # 打印脚本骨架
+        logger.info("--- 脚本骨架 ---")
+        for i, s in enumerate(script_skeleton):
+            logger.info(f"  [{i+1}] {s[:50]}")
+        logger.info("--- 开始匹配 ---\n")
+        
+        # 2. 按句索引择优（带唯一性锁定 + 末尾优先）
+        final_timeline = []
+        used_video_ids = set()  # 跟踪已使用的素材ID
+        
+        # 为每个素材计算全局索引位置
+        sorted_clips = sorted(all_clips, key=lambda x: (x.get("video_id", 0), x.get("start", 0)))
+        clip_to_index = {id(c): idx for idx, c in enumerate(sorted_clips)}
+        
+        for i, sentence_text in enumerate(script_skeleton):
+            # 详细日志输出
+            logger.info(f"[Script Line {i+1}/{len(script_skeleton)}] \"{sentence_text[:40]}...\"")
+            
+            # 在全库中寻找说这句话的所有"候选人"（阈值降至0.6）
+            candidates = self._find_similar_clips(all_clips, sentence_text, threshold=MATCH_THRESHOLD)
+            
+            if not candidates:
+                logger.warning(f"  [X] 未找到匹配素材，跳过")
+                continue
+            
+            # 过滤掉已使用的素材（禁止回流）
+            available_candidates = [c for c in candidates if c.get("video_id") not in used_video_ids]
+            
+            if not available_candidates:
+                logger.warning(f"  [X] 所有候选素材已使用（USED），跳过")
+                continue
+            
+            logger.info(f"  找到 {len(available_candidates)} 个候选素材")
+            
+            # 强化末尾优先：直接按(完整度*1000 + start_time)排序
+            # 完整句子优先（加1000分），且选择录制时间最晚的
+            def sort_key_v3(c):
+                text = c.get("matched_text", c.get("text", "")).strip()
+                # 完整度分：如果有标点加1000分
+                completeness_score = 1000.0 if re.search(r'[。！？]$', text) else 0.0
+                # 时间权重：将秒数直接加进来
+                time_score = c.get("start", 0.0)
+                return completeness_score + time_score
+
+            available_candidates.sort(key=sort_key_v3, reverse=True)
+            
+            # 3. 择优逻辑（末尾优先）
+            best_clip = self._select_best_from_candidates(available_candidates)
+            
+            if best_clip:
+                # 4. 剪辑点自适应平滑
+                best_clip = self._apply_smart_cut_points(best_clip)
+                
+                # 标记这是对应第几句话的
+                best_clip["script_index"] = i
+                best_clip["script_text"] = sentence_text
+                
+                # 5. 唯一性锁定：打上USED标签
+                best_clip["is_picked"] = True
+                video_id = best_clip.get("video_id")
+                used_video_ids.add(video_id)
+                
+                final_timeline.append(best_clip)
+                
+                # 详细日志 - 匹配报告
+                clip_name = Path(best_clip.get('video_path', '')).name
+                clip_text = best_clip.get('matched_text', best_clip.get('text', ''))[:40]
+                score = best_clip.get('score', best_clip.get('composite_score', 0))
+                start_time = best_clip.get('start', 0)
+                logger.info(f"  [OK] Using Clip [ID: {video_id}, Name: {clip_name}]")
+                logger.info(f"       Text: {clip_text}...")
+                logger.info(f"       Score: {score:.2f}, Start: {start_time:.2f}s")
+
+                # 决策对齐日志
+                logger.info(f"===> 决策对齐: 脚本句 '{sentence_text[:10]}...' 最终锁定了素材 ID {video_id}，时间点 {start_time:.2f}s")
+            else:
+                logger.warning(f"  [X] 所有候选素材质量不达标，跳过")
+        
+        # 打印最终匹配报告
+        logger.info("\n" + "=" * 60)
+        logger.info("匹配报告 (Matching Report)")
+        logger.info("=" * 60)
+        logger.info(f"{'#':<3} {'脚本句子':<30} {'素材ID':<8} {'文件名':<15} {'评分':<6}")
+        logger.info("-" * 60)
+        
+        for i, clip in enumerate(final_timeline):
+            script_text = clip.get("script_text", "")[:28]
+            video_id = clip.get("video_id", "N/A")
+            clip_name = Path(clip.get('video_path', '')).name[:13]
+            score = clip.get('score', clip.get('composite_score', 0))
+            logger.info(f"{i+1:<3} {script_text:<30} {video_id:<8} {clip_name:<15} {score:.2f}")
+        
+        logger.info("=" * 60)
+        logger.info(f"文案引导组装完成: {len(final_timeline)} 个片段")
+        
+        # 6. 逻辑校验
+        final_timeline = self.validate_sequence_logic(final_timeline)
+        
+        return final_timeline
+    
+    def _apply_position_bonus(self, candidates: List[Dict], clip_to_index: Dict, 
+                              current_index: int, total_scripts: int) -> List[Dict]:
+        """
+        应用时间轴窗口偏移权重
+        
+        逻辑：匹配素材时，优先在脚本点前后WINDOW_SIZE个片段范围内寻找。
+        如果全库有多个高分素材，物理位置更靠近前后文逻辑的素材应获得额外加分。
+        
+        Args:
+            candidates: 候选素材列表
+            clip_to_index: 素材到全局索引的映射
+            current_index: 当前脚本句子的索引
+            total_scripts: 总脚本句子数
+            
+        Returns:
+            加权后的候选列表
+        """
+        # 计算期望的素材位置
+        if not candidates or total_scripts == 0:
+            return candidates
+        
+        # 期望位置 = (当前索引 / 总脚本数) * 总素材数
+        expected_position_ratio = current_index / total_scripts
+        
+        # 计算每个候选的位置得分
+        for clip in candidates:
+            clip_id = id(clip)
+            if clip_id in clip_to_index:
+                clip_pos = clip_to_index[clip_id]
+                # 归一化位置
+                total_clips = len(clip_to_index)
+                clip_pos_ratio = clip_pos / max(total_clips, 1)
+                
+                # 位置偏差
+                position_diff = abs(clip_pos_ratio - expected_position_ratio)
+                
+                # 偏差越小，得分越高
+                if position_diff < 0.1:  # 偏差小于10%
+                    clip["_position_bonus"] = self.POSITION_BONUS
+                elif position_diff < 0.2:
+                    clip["_position_bonus"] = self.POSITION_BONUS * 0.5
+                else:
+                    clip["_position_bonus"] = 0.0
+        
+        return candidates
+    
+    def _apply_smart_cut_points(self, clip: Dict) -> Dict:
+        """
+        剪辑点自适应平滑
+        
+        操作：
+        1. 首部预留：向左扩展start（呼吸位）
+        2. 尾部处理：
+           - 如果结尾有标点或字数>=10：向右扩展end（自然结束）
+           - 如果字数<10（可能中断）：标记需要淡出
+        
+        Args:
+            clip: 素材片段
+            
+        Returns:
+            处理后的片段
+        """
+        # 首部呼吸位：向左扩展0.1秒
+        original_start = clip.get("start", 0)
+        clip["start"] = max(0, original_start - 0.1)
+        clip["_start_adjusted"] = original_start != clip["start"]
+        
+        # 尾部处理
+        text = clip.get("matched_text", clip.get("text", "")).strip().replace(" ", "")
+        char_count = len(text)
+        
+        # 判断是否为完整句子：
+        # 1. 有结尾标点，或
+        # 2. 字数 >= 10（通常是一个完整的短句）
+        is_complete = bool(re.search(r'[。！？]$', text)) or char_count >= 10
+        
+        if is_complete:
+            # 完整句子，向右扩展作为呼吸位
+            original_end = clip.get("end", clip.get("duration", 0))
+            clip["end"] = original_end + 0.15
+            clip["_fade_out"] = False
+        else:
+            # 不完整/中断，标记需要淡出
+            clip["_fade_out"] = True
+            # 稍微向左收缩，避免截断
+            original_end = clip.get("end", clip.get("duration", 0))
+            clip["end"] = original_end - 0.1
+        
+        return clip
+    
+    def validate_sequence_logic(self, timeline: List[Dict]) -> List[Dict]:
+        """
+        最后的逻辑防火墙：检查拼接后的视频是否真的'顺'
+        
+        检查规则：
+        1. 如果两个相邻片段在原始视频中相距太远（如跨了10分钟），打印警告
+        2. 如果出现素材回跳（video_id递减），尝试调整
+        
+        Args:
+            timeline: 整理后的时间线
+            
+        Returns:
+            校验后的时间线
+        """
+        if len(timeline) < 2:
+            return timeline
+        
+        warnings = []
+        
+        for i in range(len(timeline) - 1):
+            curr = timeline[i]
+            next_clip = timeline[i + 1]
+            
+            curr_video_id = curr.get("video_id", 0)
+            next_video_id = next_clip.get("video_id", 0)
+            
+            # 检查1：素材回跳
+            if next_video_id < curr_video_id:
+                warnings.append(f"Warning: 素材回跳 at index {i}: video_id {next_video_id} < {curr_video_id}")
+            
+            # 检查2：时间间隔过大
+            # 这里简化处理：如果两个片段来自不同视频，打印警告
+            if curr_video_id != next_video_id:
+                curr_name = curr.get('file_name', '')
+                next_name = next_clip.get('file_name', '')
+                warnings.append(f"Info: 跨视频拼接 at index {i}: {curr_name} -> {next_name}")
+        
+        if warnings:
+            logger.info("=== 序列逻辑校验 ===")
+            for w in warnings:
+                logger.info(w)
+        
+        return timeline
+    
+    def _normalize_text(self, text: str) -> str:
+        """
+        文本归一化：去掉标点、空格，并将数字转为文字
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            归一化后的文本
+        """
+        import re
+        
+        # 去掉所有标点符号
+        normalized = re.sub(r'[，。！？、；：""''【】（）\s，。！？、；：""''【】\(\)]', '', text)
+        
+        # 数字转文字（可选）
+        digit_map = {'0': '零', '1': '一', '2': '二', '3': '三', '4': '四', 
+                     '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'}
+        for d, w in digit_map.items():
+            normalized = normalized.replace(d, w)
+        
+        return normalized
+    
+    def extract_unique_sentences(self, all_clips: List[Dict]) -> List[str]:
+        """
+        从所有A-Roll素材中提取唯一句子构成"虚拟脚本线"
+        
+        过滤规则（强化版 v2.0）：
+        1. 过滤掉卡顿、字数过少(<3字)的废话
+        2. 文本归一化：去掉标点、空格、数字转文字
+        3. 语义指纹去重：Levenshtein距离<3判定为重复
+        4. 相似度阈值降至0.6 - 确保语义绝对唯一
+        5. 短句合并：如果连续两个片段很短且合并后能形成完整句子，则合并
+        6. 只保留最长且带标点的那一个作为脚本锚点
+        
+        Args:
+            all_clips: 所有A-Roll素材列表
+            
+        Returns:
+            不重复的句子列表（逻辑脚本）
+        """
+        from difflib import SequenceMatcher
+        
+        # 相似度阈值降至0.6，确保语义绝对唯一
+        SIMILARITY_THRESHOLD = 0.6
+        MIN_TEXT_LENGTH = 3
+        LEVENSHTEIN_MAX_DISTANCE = 5  # 语义指纹重复判定阈值（调高以更狠合并重复项）
+        
+        if not all_clips:
+            return []
+        
+        # 0. 检查缓存有效性
+        if not check_cache_validity():
+            force_clean_cache()
+        
+        # 1. 先按录制时间排序
+        sorted_clips = sorted(all_clips, key=lambda x: (
+            x.get("video_id", 0),
+            x.get("start", 0)
+        ))
+        
+        # 2. 短句合并：先把相邻的短片段合并
+        merged_clips = self._merge_short_clips(sorted_clips)
+        
+        # 3. 提取有效句子（语义指纹去重版）
+        unique_lines = []  # 存储 (原始文本, 归一化文本, 语义指纹, clip信息)
+        seen_fingerprints = set()  # 已见过的语义指纹集合
+        
+        for clip in merged_clips:
+            text = clip.get("matched_text", clip.get("text", ""))
+            if not text:
+                continue
+            
+            # 清理文本
+            original_clean = text.strip().replace(" ", "")
+            
+            # 过滤规则1：字数过少
+            if len(original_clean) < MIN_TEXT_LENGTH:
+                continue
+            
+            # 过滤规则2：卡顿检测
+            if self._has_stutter(original_clean):
+                continue
+            
+            # 过滤规则3：置信度过低（如果有）
+            confidence = clip.get("asr_confidence", 1.0)
+            if confidence < 0.5:
+                continue
+            
+            # 过滤规则4：以提示词开头（被截断的素材）
+            if re.match(r"^(走|一|二|三|四|五|1|2|3|4|5|开始)", original_clean):
+                continue
+            
+            # 文本归一化
+            normalized = self._normalize_text(original_clean)
+            
+            # 提取语义指纹
+            fingerprint = extract_semantic_fingerprint(original_clean)
+            
+            # 语义指纹硬拦截：Levenshtein距离<3判定为重复
+            is_duplicate = False
+            for existing_fingerprint in seen_fingerprints:
+                dist = levenshtein_distance(fingerprint, existing_fingerprint)
+                if dist < LEVENSHTEIN_MAX_DISTANCE:
+                    is_duplicate = True
+                    logger.info(f"  [DEDUP] 语义指纹重复: '{fingerprint[:20]}' vs '{existing_fingerprint[:20]}' (距离={dist})")
+                    break
+            
+            # 检查是否是完整句子（末尾有标点）
+            has_ending_punct = bool(re.search(r'[。！？]$', original_clean))
+            
+            if is_duplicate:
+                # 末次优先采样：只要当前这个片段的录制时间更晚，就用它作为"脚本锚点"
+                # 因为拍摄者最后一遍说的通常最接近最终剧本
+                for i, (existing_orig, existing_norm, existing_fp, existing_clip) in enumerate(unique_lines):
+                    dist = levenshtein_distance(fingerprint, existing_fp)
+                    if dist < LEVENSHTEIN_MAX_DISTANCE:
+                        # 优先选择录制时间更晚的片段
+                        if clip.get("start", 0) > existing_clip.get("start", 0):
+                            unique_lines[i] = (original_clean, normalized, fingerprint, clip)
+                            logger.info(f"  [DEDUP] 末次优先: '{original_clean[:20]}' (start={clip.get('start')}) 替换了旧版本")
+                        break
+                continue
+            
+            # 补充检查：相似度阈值（双重保险）- 也采用末次优先
+            for i, (existing_orig, existing_norm, existing_fp, existing_clip) in enumerate(unique_lines):
+                sim = SequenceMatcher(None, normalized, existing_norm).ratio()
+                if sim >= SIMILARITY_THRESHOLD:
+                    is_duplicate = True
+                    # 末次优先采样
+                    if clip.get("start", 0) > existing_clip.get("start", 0):
+                        unique_lines[i] = (original_clean, normalized, fingerprint, clip)
+                        logger.info(f"  [DEDUP] 相似度阈值末次优先: 替换了旧版本")
+                    break
+            
+            if not is_duplicate:
+                unique_lines.append((original_clean, normalized, fingerprint, clip))
+                seen_fingerprints.add(fingerprint)
+        
+        # 4. 提取最终脚本线
+        unique_sentences = [item[0] for item in unique_lines]
+        
+        # 如果没有完整句子，退而求其次选择所有有效句子
+        if not unique_sentences:
+            seen_fingerprints.clear()
+            unique_lines = []
+            for clip in merged_clips:
+                text = clip.get("matched_text", clip.get("text", ""))
+                if text:
+                    original_clean = text.strip().replace(" ", "")
+                    normalized = self._normalize_text(original_clean)
+                    fingerprint = extract_semantic_fingerprint(original_clean)
+                    
+                    if len(original_clean) >= MIN_TEXT_LENGTH and not self._has_stutter(original_clean):
+                        # 语义指纹去重
+                        is_duplicate = False
+                        for existing_fp in seen_fingerprints:
+                            dist = levenshtein_distance(fingerprint, existing_fp)
+                            if dist < LEVENSHTEIN_MAX_DISTANCE:
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            unique_lines.append((original_clean, normalized, fingerprint, clip))
+                            seen_fingerprints.add(fingerprint)
+            
+            unique_sentences = [item[0] for item in unique_lines]
+        
+        logger.info(f"[Extract v2.0] 语义指纹去重后提取到 {len(unique_sentences)} 个唯一句子")
+        for i, s in enumerate(unique_sentences):
+            logger.info(f"  [{i+1}] {s[:40]}...")
+        
+        return unique_sentences
+    
+    def _merge_short_clips(self, clips: List[Dict], min_merge_length: int = 8) -> List[Dict]:
+        """
+        短句合并：如果连续两个片段都很短，且合并后能形成完整句子，则合并
+        
+        Args:
+            clips: 已排序的片段列表
+            min_merge_length: 合并后最小字数阈值
+            
+        Returns:
+            合并后的片段列表
+        """
+        if len(clips) < 2:
+            return clips
+        
+        merged = []
+        i = 0
+        
+        while i < len(clips):
+            current = clips[i]
+            current_text = current.get("matched_text", current.get("text", "")).strip().replace(" ", "")
+            
+            # 如果当前片段已经有结尾标点，直接保留
+            if re.search(r'[。！？]$', current_text):
+                merged.append(current)
+                i += 1
+                continue
+            
+            # 如果当前片段没有结尾标点，尝试与下一个片段合并
+            if i + 1 < len(clips):
+                next_clip = clips[i + 1]
+                next_text = next_clip.get("matched_text", next_clip.get("text", "")).strip().replace(" ", "")
+                
+                # 检查是否可以合并：
+                # 1. 两个片段来自同一个视频（或相邻视频）
+                # 2. 合并后字数适中
+                # 3. 合并后有结尾标点，或者next有结尾标点
+                
+                same_video = (current.get("video_id") == next_clip.get("video_id"))
+                
+                if same_video:
+                    merged_text = current_text + next_text
+                    has_ending = re.search(r'[。！？]$', merged_text) or re.search(r'[。！？]$', next_text)
+                    
+                    # 合并条件：合并后有结尾标点 且 字数适中
+                    if has_ending and min_merge_length <= len(merged_text) <= 30:
+                        # 执行合并
+                        merged_clip = {
+                            **current,
+                            "matched_text": merged_text,
+                            "text": merged_text,
+                            "_merged": True  # 标记为合并后的片段
+                        }
+                        merged.append(merged_clip)
+                        logger.info(f"短句合并: {current_text[:15]}... + {next_text[:15]}... -> {merged_text[:20]}...")
+                        i += 2  # 跳过两个片段
+                        continue
+            
+            # 不能合并，保留当前片段
+            merged.append(current)
+            i += 1
+        
+        return merged
+    
+    def _has_stutter(self, text: str) -> bool:
+        """检测文本是否有卡顿/重复词"""
+        if not text:
+            return False
+        
+        # 检测连续重复
+        for i in range(len(text) - 1):
+            if text[i] == text[i+1] and text[i] in "的了是在":
+                return True
+        
+        # 检测短语重复模式
+        stutter_patterns = [
+            r"(.+?)\1{2,}",  # 连续重复
+            r"(.+?)，\1",    # 逗号重复
+            r"(.+?)\s+\1",   # 空格重复
+        ]
+        
+        for pattern in stutter_patterns:
+            if re.search(pattern, text):
+                return True
+        
+        return False
+    
+    def _find_similar_clips(self, all_clips: List[Dict], target_text: str, 
+                           threshold: float = 0.7) -> List[Dict]:
+        """
+        在素材库中找到与目标文本相似的所有素材
+        
+        Args:
+            all_clips: 所有素材
+            target_text: 目标文本
+            threshold: 相似度阈值
+            
+        Returns:
+            相似的素材列表
+        """
+        if not target_text or not all_clips:
+            return []
+        
+        target_clean = target_text.strip().replace(" ", "")
+        
+        similar_clips = []
+        for clip in all_clips:
+            text = clip.get("matched_text", clip.get("text", ""))
+            if not text:
+                continue
+            
+            clean_text = text.strip().replace(" ", "")
+            
+            # 计算相似度
+            sim = self.calculate_similarity(target_clean, clean_text)
+            
+            if sim >= threshold:
+                similar_clips.append({
+                    **clip,
+                    "_similarity": sim
+                })
+        
+        return similar_clips
+    
+    def _select_best_from_candidates(self, candidates: List[Dict]) -> Optional[Dict]:
+        """
+        从候选素材中选择最佳版本（物理逻辑优先版）
+        
+        排序规则（优先级从高到低）：
+        1. 完整度：有结尾标点（最高优先级，权重10000）
+        2. 录制时间：start_time越晚越好（权重1000）- 因为最后一遍通常是"OK条"
+        3. 综合评分 composite_score（权重100）
+        4. 位置偏移加分（权重10）
+        
+        Args:
+            candidates: 候选素材列表
+            
+        Returns:
+            最佳素材，如果没有合格则返回None
+        """
+        if not candidates:
+            return None
+        
+        # 检查是否有完整句子（有结尾标点）
+        has_complete = any(
+            bool(re.search(r'[。！？]$', c.get("matched_text", c.get("text", "")).strip()))
+            for c in candidates
+        )
+        
+        # 排序（物理逻辑优先版）
+        def sort_key(c):
+            text = c.get("matched_text", c.get("text", ""))
+            clean_text = text.strip().replace(" ", "")
+            
+            # 权重1（最高）：完整度 - 有结尾标点得10000分，否则0分
+            has_ending = 10000.0 if re.search(r'[。！？]$', clean_text) else 0.0
+            
+            # 如果有完整句子，过滤掉不完整的（直接返回最低分）
+            if has_complete and not has_ending:
+                return (0.0, 0.0, 0.0, 0.0)
+            
+            # 权重2：录制时间（start_time越大代表越晚录制的优先级越高）
+            # 使用start作为时间戳，越大越好
+            start_time = c.get("start", 0.0)
+            
+            # 权重3：综合评分 (composite_score)
+            composite_score = c.get("composite_score", c.get("score", 0.0))
+            
+            # 权重4：位置偏移加分
+            position_bonus = c.get("_position_bonus", 0.0)
+            
+            return (has_ending, start_time, composite_score, position_bonus)
+        
+        # 排序（倒序）
+        sorted_candidates = sorted(candidates, key=sort_key, reverse=True)
+        
+        best = sorted_candidates[0]
+        
+        # 再次检查：如果最佳素材是严重不完整的（如只有2-3个字），则跳过
+        text = best.get("matched_text", best.get("text", ""))
+        clean_text = text.strip().replace(" ", "")
+        
+        if len(clean_text) < 3:
+            logger.warning(f"  最佳素材字数过少({len(clean_text)}字)，跳过")
+            return None
+        
+        # 如果最佳素材没有结尾标点，尝试找次优但完整的素材
+        if not re.search(r'[。！？]$', clean_text) and has_complete:
+            for c in sorted_candidates[1:]:
+                text2 = c.get("matched_text", c.get("text", ""))
+                clean_text2 = text2.strip().replace(" ", "")
+                if re.search(r'[。！？]$', clean_text2):
+                    logger.info(f"  选用次优完整素材替代不完整素材")
+                    best = c
+                    break
+        
+        return best
 
 
 # ========== 独立函数版本 ==========
@@ -1171,10 +1982,7 @@ def final_cleanup(all_clips: List[Dict],
 
 def _detect_stutter_count(text: str) -> int:
     """
-    检测文本中卡顿/重复词的数量（通用方法）
-    
-    使用 clip_evaluator 中的 detect_stutter 函数，
-    支持多种重复词模式检测。
+    检测文本中卡顿/重复词的数量
     
     Args:
         text: 文本
@@ -1185,8 +1993,21 @@ def _detect_stutter_count(text: str) -> int:
     if not text:
         return 0
     
-    # 使用改进后的 detect_stutter 函数
-    from core.clip_evaluator import detect_stutter
-    has_stutter, stutters = detect_stutter(text)
+    count = 0
     
-    return len(stutters) if has_stutter else 0
+    # 方法1：连续相同单字（口吃型）
+    words = list(text)
+    for i in range(len(words) - 1):
+        if words[i] == words[i + 1] and re.match(r'[\u4e00-\u9fa5]', words[i]):
+            count += 1
+    
+    # 方法2：词级重复 "今天今天"
+    if len(text) >= 4:
+        for i in range(len(text) - 2):
+            substring = text[i:i+2]
+            if text.count(substring) >= 2 and i < len(text) - 4:
+                next_pos = text.find(substring, i + 2)
+                if next_pos == i + 2:
+                    count += 1
+    
+    return count

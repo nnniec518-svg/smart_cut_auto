@@ -80,7 +80,7 @@ class ParamPanel(QWidget):
         self.sentence_threshold = QDoubleSpinBox()
         self.sentence_threshold.setRange(0, 1)
         self.sentence_threshold.setSingleStep(0.05)
-        self.sentence_threshold.setValue(0.55)
+        self.sentence_threshold.setValue(0.6)
         layout.addRow("句子匹配阈值:", self.sentence_threshold)
         
         # 静音阈值
@@ -133,26 +133,17 @@ class ParamPanel(QWidget):
         group = QGroupBox("视频参数")
         layout = QFormLayout()
         
-        # 视频比例
-        self.aspect_ratio = QComboBox()
-        self.aspect_ratio.addItems(["9:16 (竖屏)", "16:9 (横屏)", "1:1 (方形)", "4:3", "3:4"])
-        self.aspect_ratio.setCurrentText("9:16 (竖屏)")
-        self.aspect_ratio.currentTextChanged.connect(self._on_aspect_ratio_changed)
-        layout.addRow("视频比例:", self.aspect_ratio)
-        
         # 分辨率
         res_layout = QHBoxLayout()
         self.width_spin = QSpinBox()
         self.width_spin.setRange(480, 3840)
         self.width_spin.setValue(1080)
         self.width_spin.setSuffix(" px")
-        self.width_spin.valueChanged.connect(self._on_resolution_changed)
         
         self.height_spin = QSpinBox()
         self.height_spin.setRange(480, 3840)
         self.height_spin.setValue(1920)
         self.height_spin.setSuffix(" px")
-        self.height_spin.valueChanged.connect(self._on_resolution_changed)
         
         res_layout.addWidget(self.width_spin)
         res_layout.addWidget(QLabel("×"))
@@ -180,56 +171,6 @@ class ParamPanel(QWidget):
         
         group.setLayout(layout)
         return group
-    
-    def _on_aspect_ratio_changed(self, text: str):
-        """视频比例改变时自动调整分辨率"""
-        # 保持宽度为1080，根据比例计算高度
-        width = 1080
-        
-        if "9:16" in text:
-            height = 1920
-        elif "16:9" in text:
-            height = 608  # 1920/3.16 ≈ 608
-        elif "1:1" in text:
-            height = 1080
-        elif "4:3" in text:
-            height = 810
-        elif "3:4" in text:
-            height = 1440
-        else:
-            height = 1920
-        
-        # 阻塞信号以避免触发递归
-        self.width_spin.valueChanged.disconnect()
-        self.height_spin.valueChanged.disconnect()
-        
-        self.width_spin.setValue(width)
-        self.height_spin.setValue(height)
-        
-        self.width_spin.valueChanged.connect(self._on_resolution_changed)
-        self.height_spin.valueChanged.connect(self._on_resolution_changed)
-    
-    def _on_resolution_changed(self):
-        """分辨率改变时更新比例选择"""
-        # 根据当前分辨率更新比例下拉框
-        w = self.width_spin.value()
-        h = self.height_spin.value()
-        
-        # 尝试匹配比例
-        ratio = w / h if h > 0 else 0
-        
-        if abs(ratio - 9/16) < 0.01:
-            self.aspect_ratio.blockSignals(True)
-            self.aspect_ratio.setCurrentText("9:16 (竖屏)")
-            self.aspect_ratio.blockSignals(False)
-        elif abs(ratio - 16/9) < 0.01:
-            self.aspect_ratio.blockSignals(True)
-            self.aspect_ratio.setCurrentText("16:9 (横屏)")
-            self.aspect_ratio.blockSignals(False)
-        elif abs(ratio - 1) < 0.01:
-            self.aspect_ratio.blockSignals(True)
-            self.aspect_ratio.setCurrentText("1:1 (方形)")
-            self.aspect_ratio.blockSignals(False)
     
     def _create_subtitle_group(self) -> QGroupBox:
         """创建字幕参数组"""
@@ -305,7 +246,6 @@ class ParamPanel(QWidget):
             "normalize_audio": self.normalize_audio.isChecked(),
             
             # 视频参数
-            "video_aspect_ratio": self.aspect_ratio.currentText(),
             "video_resolution": {
                 "width": self.width_spin.value(),
                 "height": self.height_spin.value()
@@ -342,11 +282,6 @@ class ParamPanel(QWidget):
         self.normalize_audio.setChecked(params.get("normalize_audio", True))
         
         # 视频参数
-        # 先设置比例（这会影响分辨率）
-        aspect_text = params.get("video_aspect_ratio", "9:16 (竖屏)")
-        if aspect_text:
-            self.aspect_ratio.setCurrentText(aspect_text)
-        
         res = params.get("video_resolution", {"width": 1080, "height": 1920})
         self.width_spin.setValue(res.get("width", 1080))
         self.height_spin.setValue(res.get("height", 1920))

@@ -25,15 +25,6 @@ FILTER_WORDS = {
     '想', '说', '要', '会', '能', '就', '还', '也', '都'
 }
 
-# B-Roll 关键词 - 匹配这些关键词时优先从 B_ROLL 素材召回
-B_ROLL_KEYWORDS = {
-    '空镜头', '空镜', '风景', '景色', '环境', '画面', '场景',
-    '外景', '室内', '办公室', '产品', '商品', '展示', '演示',
-    '背景', '氛围', '街头', '道路', '建筑', '自然', '城市',
-    '乡村', '海边', '山景', '花', '草', '树', '天空', '云',
-    '日出', '日落', '夜景', '灯光', '特写', '远景', '全景'
-}
-
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
@@ -42,7 +33,7 @@ MODELS_DIR = PROJECT_ROOT / "models"
 class Matcher:
     """文案匹配器"""
     
-    def __init__(self, similarity_model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, similarity_model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"):
         """
         初始化匹配器
         
@@ -67,18 +58,24 @@ class Matcher:
             # 检查本地模型目录
             local_model_path = MODELS_DIR / "sentence_transformers" / f"models--{self.model_name.replace('/', '--')}"
             
+            # 使用缓存目录加载（ SentenceTransformers 会自动使用本地缓存）
+            cache_folder = str(MODELS_DIR / "sentence_transformers")
+            
             if local_model_path.exists():
-                # 使用本地模型
-                logger.info(f"Loading local model from: {local_model_path}")
-                self.model = SentenceTransformer(str(local_model_path))
-            else:
-                # 使用缓存目录
-                cache_folder = str(MODELS_DIR / "sentence_transformers")
+                # 使用本地模型（通过 cache_folder）
+                logger.info(f"Using local cached model: {self.model_name}")
                 self.model = SentenceTransformer(
                     self.model_name,
                     cache_folder=cache_folder
                 )
-                logger.info(f"Model '{self.model_name}' loaded from cache")
+            else:
+                # 尝试从缓存或网络加载
+                logger.info(f"Loading model: {self.model_name}")
+                self.model = SentenceTransformer(
+                    self.model_name,
+                    cache_folder=cache_folder
+                )
+            logger.info(f"Model loaded successfully: {self.model_name}")
         except Exception as e:
             logger.error(f"加载模型失败: {e}")
             # 降级到简单的词匹配
@@ -205,81 +202,6 @@ class Matcher:
         words = [w for w in words if w and len(w) > 1 and w not in FILTER_WORDS]
         return words
     
-    def requires_b_roll(self, text: str) -> bool:
-        """
-        检测文案是否需要 B-Roll (空镜头)
-        
-        Args:
-            text: 目标文案句子
-            
-        Returns:
-            是否需要 B-Roll
-        """
-        # 预处理
-        text = text.replace(' ', '').lower()
-        
-        # 检查是否包含 B-Roll 关键词
-        for keyword in B_ROLL_KEYWORDS:
-            if keyword in text:
-                logger.info(f"检测到 B-Roll 关键词: {keyword}")
-                return True
-        
-        return False
-    
-    def match_b_roll(self, 
-                     b_roll_assets: List[Dict],
-                     target_text: str,
-                     similarity_threshold: float = 0.1) -> Optional[Dict]:
-        """
-        为 B-Roll 需求匹配素材
-        
-        Args:
-            b_roll_assets: B-Roll 素材列表 (包含 path, name, asr_text 等)
-            target_text: 目标文案
-            similarity_threshold: 相似度阈值
-            
-        Returns:
-            匹配的 B-Roll 素材信息或 None
-        """
-        if not b_roll_assets:
-            return None
-        
-        # 预处理目标文案
-        target_clean = target_text.replace(' ', '').lower()
-        
-        best_match = None
-        best_similarity = 0.0
-        
-        for asset in b_roll_assets:
-            # B-Roll 的 asr_text 可能为空或很短
-            asset_text = asset.get('asr_text', '') or ''
-            asset_text_clean = asset_text.replace(' ', '').lower()
-            
-            if not asset_text_clean:
-                # 如果没有文本，给予一个基础分数（随机选择）
-                similarity = 0.3
-            else:
-                # 计算相似度
-                similarity = self.text_similarity(asset_text_clean, target_clean)
-            
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match = {
-                    "material_path": asset.get('path'),
-                    "material_name": asset.get('name'),
-                    "track_type": "B_ROLL",
-                    "start": 0.0,  # B-Roll 通常从头开始
-                    "end": asset.get('duration', 5.0),
-                    "similarity": similarity,
-                    "is_b_roll": True
-                }
-        
-        if best_match and best_similarity >= similarity_threshold:
-            logger.info(f"B-Roll 匹配成功: {best_match['material_name']}, 相似度: {best_similarity:.3f}")
-            return best_match
-        
-        return None
-    
     def process_single_material(self, 
                                  audio_path: str, 
                                  target_text: str,
@@ -380,6 +302,13 @@ class Matcher:
                 start_time = trimmed_start
                 end_time = trimmed_end
             
+            # ASR时间戳Padding：前后各增加0.2秒，防止ASR截断导致吞字
+            padding_sec = 0.2
+            video_duration = len(audio) / sr
+            start_time = max(0, start_time - padding_sec)
+            end_time = min(video_duration, end_time + padding_sec)
+            logger.info(f"Applied timestamp padding: {start_time:.3f}s - {end_time:.3f}s")
+            
             return {
                 "start_time": start_time,
                 "end_time": end_time,
@@ -479,53 +408,159 @@ class Matcher:
     def _greedy_sentence_matching(self,
                                    target_sentences: List[str],
                                    available_sentences: List[Dict],
-                                   threshold: float = 0.6) -> List[Dict]:
+                                   threshold: float = 0.6,
+                                   order_bonus: float = 0.2,
+                                   max_time_gap: float = 5.0,
+                                   index_penalty_factor: float = 0.1,
+                                   search_window_size: int = 30,
+                                   window_backtrack: int = 5,
+                                   adaptive_window: bool = True) -> List[Dict]:
         """
-        无序句子匹配算法 - 从所有素材中找最匹配的，不考虑顺序
-        
+        有序句子匹配算法 - 动态滑动窗口 + 顺序约束 + 索引距离惩罚
+
         Args:
             target_sentences: 目标文案句子列表
             available_sentences: 可用的素材句子列表
             threshold: 相似度阈值
-            
+            order_bonus: 顺序匹配奖励分数（相邻句子即使相似度稍低也优先选择）
+            max_time_gap: 判定为"相邻"的最大时间间隔（秒）
+            index_penalty_factor: 索引距离惩罚系数（离预期位置越远扣分越多）
+            search_window_size: 基础滑动窗口大小
+            window_backtrack: 窗口回退距离（允许向前搜索的范围）
+            adaptive_window: 是否启用自适应窗口大小
+
         Returns:
             匹配结果列表
         """
         # 记录已使用的素材句子（避免重复使用）
         used_sentence_indices = set()
-        
+
         matched = []
-        
-        for target_sent in target_sentences:
+
+        # 记录上一个匹配的句子索引，用于顺序约束和索引距离计算
+        last_matched_idx = -1
+
+        # 滑动窗口起始索引：强制"推着走"
+        window_start_idx = 0
+
+        # 统计信息
+        consecutive_failures = 0  # 连续匹配失败次数
+        max_consecutive_failures = 3  # 最大允许连续失败次数
+        window_expansion_factor = 2  # 窗口扩展倍数(匹配失败时)
+
+        for i, target_sent in enumerate(target_sentences):
             best_match = None
-            best_similarity = 0.0
+            best_final_score = -float('inf')  # 初始为负无穷，确保能找到任何有效匹配
             best_idx = -1
+            best_raw_similarity = 0.0
+
+            # 用于调试：记录所有候选的得分情况
+            all_candidates = []
+
+            # ========== 动态窗口计算 ==========
+            # 如果启用自适应窗口且连续失败，扩大窗口范围
+            current_window_size = search_window_size
+            if adaptive_window and consecutive_failures > 0:
+                # 扩大窗口: 基础窗口 * (1 + 扩展倍数 * 失败次数)
+                current_window_size = int(search_window_size * (1 + window_expansion_factor * min(consecutive_failures, 2)))
+                logger.debug(f"  -> 窗口自适应: 基础{search_window_size} -> 扩展{current_window_size} (连续失败{consecutive_failures}次)")
+
+            # 计算窗口范围：允许一定回退，但主要向前推进
+            # 回退机制: 如果上一个匹配在当前位置之后，允许向前回溯5个位置
+            if last_matched_idx >= 0:
+                window_start_idx = max(0, min(last_matched_idx - window_backtrack, window_start_idx))
+
+            # 滑动窗口：只在最近 current_window_size 个句子中搜索
+            search_end = min(window_start_idx + current_window_size, len(available_sentences))
+            search_indices = list(range(window_start_idx, search_end))
+
+            logger.debug(f"[{i+1}/{len(target_sentences)}] Target: '{target_sent[:15]}...' | Window: [{window_start_idx}-{search_end}] (size={current_window_size}) | LastIdx: {last_matched_idx}")
             
-            # 遍历所有素材句子，找出最佳匹配
-            for idx, sent in enumerate(available_sentences):
+            for local_idx in search_indices:
+                idx = local_idx
+                sent = available_sentences[idx]
+                
                 # 跳过已使用的句子
                 if idx in used_sentence_indices:
                     continue
                 
-                # 计算相似度
-                sim = self.text_similarity(sent["text"], target_sent)
+                # 计算基础相似度
+                raw_sim = self.text_similarity(sent["text"], target_sent)
                 
-                # 找最高相似度
-                if sim > best_similarity:
-                    best_similarity = sim
+                # ========== 计算顺序奖励 ==========
+                order_bonus_score = 0.0
+                if last_matched_idx >= 0:
+                    # 索引距离惩罚：离预期的下一句越远，扣分越多
+                    expected_idx = last_matched_idx + 1
+                    index_distance = abs(idx - expected_idx)
+                    index_penalty = index_penalty_factor * index_distance
+                    
+                    # 同一素材 + 时间相邻 = 额外奖励
+                    time_bonus = 0.0
+                    if last_matched_idx < len(available_sentences):
+                        last_sent = available_sentences[last_matched_idx]
+                        if (sent["material_index"] == last_sent["material_index"] and
+                            not sent.get("missing", False) and
+                            not last_sent.get("missing", False)):
+                            time_gap = sent["start"] - last_sent["end"]
+                            if -0.5 <= time_gap <= max_time_gap:
+                                time_bonus = order_bonus * (1.0 - min(time_gap / max_time_gap, 1.0))
+                    
+                    order_bonus_score = time_bonus
+                else:
+                    index_penalty = 0
+                
+                # 最终分数 = 基础相似度 + 顺序奖励 - 索引距离惩罚
+                final_score = raw_sim + order_bonus_score - index_penalty
+                
+                # 记录候选信息用于调试
+                all_candidates.append({
+                    "idx": idx,
+                    "sim": raw_sim,
+                    "bonus": order_bonus_score,
+                    "penalty": index_penalty if last_matched_idx >= 0 else 0,
+                    "final": final_score,
+                    "text": sent["text"][:20]
+                })
+                
+                # 找最高最终分数
+                if final_score > best_final_score:
+                    best_final_score = final_score
+                    best_raw_similarity = raw_sim
                     best_match = {
                         "material_index": sent["material_index"],
                         "start": sent["start"],
                         "end": sent["end"],
                         "text": sent["text"],
-                        "similarity": sim
+                        "similarity": raw_sim,
+                        "final_score": final_score,
+                        "order_bonus": order_bonus_score,
+                        "index_penalty": index_penalty if last_matched_idx >= 0 else 0
                     }
                     best_idx = idx
             
-            # 如果找到匹配且达到阈值
-            if best_match and best_similarity >= threshold:
+            # 调试日志：打印前3名候选
+            if all_candidates:
+                sorted_cands = sorted(all_candidates, key=lambda x: x["final"], reverse=True)[:3]
+                debug_str = " | ".join([
+                    f"idx{c['idx']}(sim{c['sim']:.2f}->final{c['final']:.2f})" 
+                    for c in sorted_cands
+                ])
+                logger.debug(f"  Candidates: {debug_str}")
+            
+            # 如果找到匹配且达到阈值（使用原始相似度判断）
+            if best_match and best_raw_similarity >= threshold:
                 matched.append(best_match)
                 used_sentence_indices.add(best_idx)
+                last_matched_idx = best_idx
+
+                # 更新滑动窗口起点，实现"推着走"的效果
+                window_start_idx = best_idx + 1
+
+                # 重置连续失败计数
+                consecutive_failures = 0
+
+                logger.debug(f"  -> WINNER: idx{best_idx} sim={best_raw_similarity:.3f} final={best_final_score:.3f}")
             else:
                 # 未找到匹配，记录为缺失
                 matched.append({
@@ -536,6 +571,15 @@ class Matcher:
                     "similarity": 0,
                     "missing": True
                 })
+                last_matched_idx = -1
+
+                # 连续失败处理
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    # 连续失败达到阈值，强制推进窗口(避免卡死)
+                    logger.warning(f"  -> 连续失败{consecutive_failures}次，强制推进窗口")
+                    window_start_idx = min(window_start_idx + search_window_size // 2, len(available_sentences))
+                    consecutive_failures = 0  # 重置计数
         
         # 合并连续来自同一素材的片段
         merged = self._merge_consecutive_segments(matched)
@@ -546,12 +590,12 @@ class Matcher:
         """合并连续来自同一素材的片段"""
         if not segments:
             return []
-        
+
         merged = [segments[0]]
-        
+
         for seg in segments[1:]:
             last = merged[-1]
-            
+
             # 检查是否可以合并
             if (seg["material_index"] == last["material_index"] and
                 seg.get("missing", False) == last.get("missing", False) and
@@ -566,161 +610,111 @@ class Matcher:
                 }
             else:
                 merged.append(seg)
-        
+
         return merged
-    
-    def match_with_track_type(self,
-                              target_text: str,
-                              a_roll_materials: List[Dict],
-                              b_roll_materials: List[Dict],
-                              sentence_threshold: float = 0.6) -> List[Dict]:
+
+    def _calculate_adaptive_window_size(self,
+                                       base_size: int,
+                                       target_sentences_count: int,
+                                       available_sentences_count: int,
+                                       consecutive_failures: int = 0) -> int:
         """
-        带 track_type 感知的匹配 - 优先从对应类型的素材中召回
-        
+        根据上下文动态调整窗口大小
+
         Args:
-            target_text: 目标文案全文
-            a_roll_materials: A_ROLL 素材列表 (包含 path, asr_text, segments, duration 等)
-            b_roll_materials: B_ROLL 素材列表
-            sentence_threshold: 句子匹配阈值
-            
+            base_size: 基础窗口大小
+            target_sentences_count: 目标文案句子总数
+            available_sentences_count: 可用素材句子总数
+            consecutive_failures: 连续匹配失败次数
+
         Returns:
-            匹配结果列表，每个元素包含 material_index, start, end, track_type 等
+            调整后的窗口大小
         """
-        # 分句
-        target_sentences = self._split_sentences(target_text)
-        
-        if not target_sentences:
-            return []
-        
-        matched = []
-        
-        # 准备 A_ROLL 句子
-        a_roll_sentences = []
-        for i, mat in enumerate(a_roll_materials):
-            segments = mat.get('segments', [])
-            for seg in segments:
-                text = seg.get('text', '')
-                if text:
-                    a_roll_sentences.append({
-                        "material_index": i,
-                        "material_type": "A_ROLL",
-                        "text": text,
-                        "start": seg.get('start', 0),
-                        "end": seg.get('end', 0),
-                        "material": mat
-                    })
-        
-        # 准备 B_ROLL 句子 (B-Roll 通常没有文本，使用素材本身信息)
-        b_roll_sentences = []
-        for i, mat in enumerate(b_roll_materials):
-            b_roll_sentences.append({
-                "material_index": i,
-                "material_type": "B_ROLL",
-                "text": mat.get('asr_text', '') or '',
-                "start": 0.0,
-                "end": mat.get('duration', 5.0),
-                "material": mat
-            })
-        
-        # 对每个目标句子进行匹配
-        for target_sent in target_sentences:
-            # 1. 首先检查是否需要 B-Roll
-            if self.requires_b_roll(target_sent):
-                # 优先从 B_ROLL 匹配
-                best_match = self._find_best_match(target_sent, b_roll_sentences, sentence_threshold)
-                
-                if best_match:
-                    matched.append({
-                        "material_index": best_match["material_index"],
-                        "material_type": "B_ROLL",
-                        "start": best_match["start"],
-                        "end": best_match["end"],
-                        "text": best_match["text"],
-                        "similarity": best_match["similarity"],
-                        "is_b_roll": True,
-                        "target_text": target_sent
-                    })
-                    continue
-            
-            # 2. 从 A_ROLL 匹配
-            best_match = self._find_best_match(target_sent, a_roll_sentences, sentence_threshold)
-            
-            if best_match:
-                matched.append({
-                    "material_index": best_match["material_index"],
-                    "material_type": "A_ROLL",
-                    "start": best_match["start"],
-                    "end": best_match["end"],
-                    "text": best_match["text"],
-                    "similarity": best_match["similarity"],
-                    "is_b_roll": False,
-                    "target_text": target_sent
-                })
-            else:
-                # A_ROLL 没找到，尝试 B_ROLL
-                best_match = self._find_best_match(target_sent, b_roll_sentences, sentence_threshold)
-                
-                if best_match:
-                    matched.append({
-                        "material_index": best_match["material_index"],
-                        "material_type": "B_ROLL",
-                        "start": best_match["start"],
-                        "end": best_match["end"],
-                        "text": best_match["text"],
-                        "similarity": best_match["similarity"],
-                        "is_b_roll": True,
-                        "target_text": target_sent
-                    })
-                else:
-                    # 没找到匹配
-                    matched.append({
-                        "material_index": -1,
-                        "material_type": "UNKNOWN",
-                        "start": 0,
-                        "end": 0,
-                        "text": target_sent,
-                        "similarity": 0,
-                        "missing": True,
-                        "target_text": target_sent
-                    })
-        
-        return matched
-    
-    def _find_best_match(self, 
-                         target_sent: str, 
-                         available_sentences: List[Dict],
-                         threshold: float) -> Optional[Dict]:
+        # 场景1: 超长脚本(>100句) → 扩大窗口
+        if target_sentences_count > 100:
+            scaled_size = int(base_size * 1.5)
+            logger.debug(f"  -> 超长脚本(>100句): 窗口 {base_size} -> {scaled_size}")
+            return min(scaled_size, available_sentences_count)
+
+        # 场景2: 重复录制(同句多次) → 缩小窗口
+        if available_sentences_count > target_sentences_count * 3:
+            # 素材数量 > 文案数量的3倍,说明有大量重复录制
+            scaled_size = int(base_size * 0.7)
+            logger.debug(f"  -> 重复录制: 窗口 {base_size} -> {scaled_size}")
+            return max(scaled_size, 10)  # 最小10
+
+        # 场景3: 连续失败 → 扩大窗口
+        if consecutive_failures > 0:
+            expansion_factor = 1 + 0.5 * min(consecutive_failures, 3)  # 最多2.5倍
+            scaled_size = int(base_size * expansion_factor)
+            logger.debug(f"  -> 连续失败{consecutive_failures}次: 窗口 {base_size} -> {scaled_size}")
+            return min(scaled_size, available_sentences_count)
+
+        # 默认返回基础大小
+        return base_size
+
+    def _optimize_window_position(self,
+                                 window_start: int,
+                                 last_matched_idx: int,
+                                 window_size: int,
+                                 total_sentences: int,
+                                 window_backtrack: int = 5) -> int:
         """
-        从可用句子列表中找到最佳匹配
-        
+        优化窗口起始位置，允许适度回退但强制向前推进
+
         Args:
-            target_sent: 目标句子
-            available_sentences: 可用句子列表
-            threshold: 相似度阈值
-            
+            window_start: 当前窗口起始位置
+            last_matched_idx: 上一个匹配的索引
+            window_size: 窗口大小
+            total_sentences: 总句子数
+            window_backtrack: 允许回退的距离
+
         Returns:
-            最佳匹配结果或 None
+            优化后的窗口起始位置
         """
-        best_match = None
-        best_similarity = 0.0
-        
-        for sent in available_sentences:
-            sim = self.text_similarity(sent["text"], target_sent)
-            
-            if sim > best_similarity:
-                best_similarity = sim
-                best_match = {
-                    "material_index": sent["material_index"],
-                    "start": sent["start"],
-                    "end": sent["end"],
-                    "text": sent["text"],
-                    "similarity": sim
-                }
-        
-        if best_similarity >= threshold:
-            return best_match
-        
-        return None
+        if last_matched_idx < 0:
+            # 首次匹配，从0开始
+            return 0
+
+        # 计算预期窗口起始位置
+        expected_start = last_matched_idx + 1
+
+        # 允许适度回退(回退范围: window_backtrack)
+        backtrack_start = max(0, last_matched_idx - window_backtrack)
+
+        # 选择较大的值: 当前窗口 vs 回退位置 vs 预期位置
+        # 确保窗口不会倒退太多，同时允许一定的灵活性
+        optimized_start = max(expected_start, min(window_start, backtrack_start))
+
+        # 边界检查
+        return min(optimized_start, max(0, total_sentences - window_size))
+
+    def _should_expand_window(self,
+                             current_size: int,
+                             base_size: int,
+                             consecutive_failures: int,
+                             max_failures: int = 3) -> bool:
+        """
+        判断是否应该扩大窗口
+
+        Args:
+            current_size: 当前窗口大小
+            base_size: 基础窗口大小
+            consecutive_failures: 连续失败次数
+            max_failures: 最大允许失败次数
+
+        Returns:
+            是否扩大窗口
+        """
+        # 已经足够大，不需要再扩大
+        if current_size >= base_size * 3:
+            return False
+
+        # 连续失败超过阈值，应该扩大
+        if consecutive_failures >= max_failures:
+            return True
+
+        return False
     
     def _split_sentences(self, text: str) -> List[str]:
         """

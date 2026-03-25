@@ -21,8 +21,19 @@ TEMP_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
 
+def _import_moviepy():
+    """兼容新旧版本MoviePy的导入"""
+    try:
+        # MoviePy v2.0+ 使用新导入方式
+        from moviepy import VideoFileClip
+        return VideoFileClip
+    except ImportError:
+        # MoviePy v1.x 使用旧导入方式
+        from moviepy.editor import VideoFileClip
+        return VideoFileClip
+
 DEFAULT_CONFIG = {
-    "similarity_threshold": 0.2,
+    "similarity_threshold": 0.6,
     "single_threshold": 0.85,
     "silence_threshold": 1.5,
     "noise_reduce_strength": 0.3,
@@ -227,9 +238,23 @@ def get_video_info(video_path: str) -> Dict[str, Any]:
         except Exception as e:
             logging.warning(f"FFprobe failed: {e}")
     
-    # 如果ffprobe也失败，返回空字典
-    logging.error(f"获取视频信息失败: {video_path}")
-    return {}
+    # 备用：使用 moviepy
+    try:
+        from moviepy.editor import VideoFileClip
+        clip = VideoFileClip(str(video_path))
+        info = {
+            "duration": clip.duration,
+            "width": clip.w,
+            "height": clip.h,
+            "fps": clip.fps,
+            "video_codec": "h264",
+            "audio_codec": "aac"
+        }
+        clip.close()
+        return info
+    except Exception as e:
+        logging.error(f"获取视频信息失败: {e}")
+        return {}
 
 
 def format_time(seconds: float) -> str:

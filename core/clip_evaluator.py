@@ -13,6 +13,8 @@ from enum import Enum
 import numpy as np
 import difflib
 
+from .config import config
+
 logger = logging.getLogger("smart_cut")
 
 
@@ -69,53 +71,32 @@ class ClipEvaluator:
     基于多维特征计算评分，不依赖特定 ASR 模型
     """
     
-    # 默认配置
-    DEFAULT_CONFIG = {
-        # 评分权重
-        "score_weights": {
-            "vad_ratio": 0.30,          # VAD 占比权重
-            "energy": 0.25,             # 能量得分权重
-            "length": 0.20,             # 长度得分权重
-            "semantic_integrity": 0.25 # 语义完整性权重
-        },
-        
-        # 阈值设置
-        "min_score": 0.65,         # 最低入围分数
-        "min_text_length": 3,       # 最少文字数
-        "min_text_duration": 0.5,    # 最少文字时长 (秒)
-        "min_final_duration": 0.4,  # 最小最终时长 (秒)
-        "min_audio_db": -45,         # 最低音频分贝
-        
-        # 去重配置
-        "dedup_similarity_threshold": 0.85,  # 相似度阈值
-        "dedup_min_score": 0.65,    # 参与去重的最低分数
-        
-        # 能量归一化参数
-        "energy_min_db": -50,       # -50dB = 0分
-        "energy_max_db": -10,       # -10dB = 100分
-        
-        # 缓存配置
-        "config_version": "2.0"      # 配置版本 (变更需重算)
-    }
+
     
-    def __init__(self, config: Optional[Dict] = None, cache_path: str = "storage/clip_cache.json"):
+    def __init__(self, evaluator_config: Optional[Dict] = None, cache_path: Optional[str] = None):
         """
         初始化评分器
-        
+
         Args:
-            config: 配置字典
-            cache_path: 缓存文件路径
+            evaluator_config: 评分配置字典（可选，默认使用全局配置）
+            cache_path: 缓存文件路径（可选）
         """
-        self.config = {**self.DEFAULT_CONFIG}
-        if config:
-            self.config.update(config)
-        
+        # 使用全局配置或传入的配置
+        if evaluator_config is None:
+            self.config = config.evaluator_config.copy()
+        else:
+            self.config = evaluator_config.copy()
+
+        # 设置缓存路径
+        if cache_path is None:
+            cache_path = "storage/clip_cache.json"
         self.cache_path = Path(cache_path)
+
         self._cache = self._load_cache()
-        
+
         # 加载相似度计算函数
         self._load_similarity_func()
-        
+
         logger.info(f"ClipEvaluator initialized with config: {self._get_config_hash()[:8]}...")
     
     def _load_similarity_func(self):

@@ -20,7 +20,7 @@ def get_device():
     global DEVICE
     if DEVICE is None:
         DEVICE = torch_directml.device()
-        print(f"[DirectML] Hardware acceleration locked: {DEVICE} (AMD Radeon Graphics)")
+        logger.info(f"[DirectML] Hardware acceleration locked: {DEVICE} (AMD Radeon Graphics)")
     return DEVICE
 
 # 初始化设备

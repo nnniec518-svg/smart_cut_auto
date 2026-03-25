@@ -1,0 +1,229 @@
+b_roll_keywords:
+- 空镜头
+- 空镜
+- 风景
+- 景色
+- 环境
+- 画面
+- 场景
+- 外景
+- 室内
+- 办公室
+- 产品
+- 商品
+- 展示
+- 演示
+- 背景
+- 氛围
+- 街头
+- 道路
+- 建筑
+- 自然
+- 城市
+- 乡村
+- 海边
+- 山景
+- 花
+- 草
+- 树
+- 天空
+- 云
+- 日出
+- 日落
+- 夜景
+- 灯光
+- 特写
+- 远景
+- 全景
+classification:
+  a_roll_threshold: 0.25
+  b_roll_threshold: 0.08
+  silence_threshold: -40
+correction_dict:
+  一架: 一价
+  一架全含: 一价全包
+  三一五: '315'
+  三幺五: '315'
+  五块: 5折
+  五折: 5折
+  代金券: 代金券
+  全一二: 权益二
+  全宜: 权益
+  全宜三: 权益三
+  全屋全嗯: 全屋全套
+  全益: 权益
+  全益一: 权益一
+  升到家: 省到家
+  可以我在: 我在
+  局改: 局改
+  志高: 权益
+  权益四胜: 权益四
+  权益四胜权益四胜: 权益一
+  极红: 洗烘
+  洗红: 洗烘
+  洗红套装: 洗烘套装
+  美丽: 美的
+  美丽奥: 美的
+  重点啊: 重点
+  防换新: 焕新
+cue_words:
+  buffer_sec: 0.1
+  max_search_time: 3.0
+  patterns:
+  - 一
+  - 二
+  - 三
+  - 四
+  - 五
+  - '1'
+  - '2'
+  - '3'
+  - '4'
+  - '5'
+  - 走
+  - 开始
+  - 准备
+  - action
+  - 咔
+  - 好的
+  - '321'
+  - 三二一
+database:
+  mtime_tolerance: 1.0
+  path: storage/materials.db
+duration_control:
+  enabled: true
+  remove_lowest_quality: true
+  target_duration:
+  - 15
+  - 30
+evaluator:
+  dedup_min_score: 0.65
+  dedup_similarity_threshold: 0.85
+  energy_max_db: -10
+  energy_min_db: -50
+  min_audio_db: -45
+  min_final_duration: 0.4
+  min_score: 0.65
+  min_text_duration: 0.5
+  min_text_length: 3
+  score_weights:
+    energy: 0.25
+    length: 0.2
+    semantic_integrity: 0.25
+    vad_ratio: 0.3
+filter:
+  a_roll_threshold: 70
+  dedup_similarity_threshold: 0.8
+  logic_version: '2.0'
+  max_no_speech_prob: 0.5
+  min_confidence: 0.8
+  min_final_duration: 0.4
+  min_text_length: 3
+  score_weights:
+    audio_energy: 0.3
+    confidence: 0.4
+    text_length: 0.3
+local_life_keywords:
+  benefits:
+  - 代金券
+  - 补贴
+  - 政府补贴
+  - 局改服务
+  - 洗烘套装
+  - 本色洗烘套装
+  - 优惠券
+  - 折扣
+  - 5折
+  - 五折
+  events:
+  - 火三月
+  - 315活动
+  - 3月1日
+  - 3月31日
+  - 三月一号
+  - 三月三十一号
+  - 双11
+  - '618'
+  products:
+  - 洗烘套装
+  - 空调
+  - 冰箱
+  - 洗衣机
+  - 本色洗烘套装
+  rights:
+  - 权益一
+  - 权益二
+  - 权益三
+  - 权益四
+  - 四大权益
+  store_names:
+  - 京东电器
+  - 京东电器旗舰店
+  - 京东电器城市体验
+  - 小天鹅
+  - 美的
+  - 格力
+  - 海尔
+logging:
+  file: logs/smart_cut.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
+match_weights:
+  edit: 0.1
+  keyword: 0.2
+  semantic: 0.7
+matching:
+  b_roll_fallback_threshold: 0.3
+  penalty_repeat: 0.8
+  penalty_time_reverse: 1.0
+  reward_sequence: 0.2
+  threshold: 0.6
+models:
+  asr_model: iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch
+  embedding_model: BAAI/bge-large-zh-v1.5
+  fallback_embedding: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+number_constraint:
+  enabled: true
+  mismatch_penalty: 10.0
+overlay:
+  enabled: true
+  margin: 10
+  opacity: 0.8
+  position: bottom-right
+  scale: 0.3
+paths:
+  logs_dir: logs
+  output_dir: temp
+  raw_folder: storage/materials-all
+planner:
+  a_roll_threshold: 0.25
+  b_roll_threshold: 0.08
+  latest_recording_bonus: 0.01
+  penalty_hard_time_reverse: 1.0
+  penalty_number_mismatch: 0.4
+  penalty_repeat: 0.8
+  penalty_time_reverse: 0.5
+  reward_sequence: 0.2
+  tiebreak_threshold: 0.05
+  window_expansion: 1.5
+  window_initial_percent: 0.2
+  window_min_size: 10
+render:
+  audio_bitrate: 128k
+  crf: 18
+  crossfade_duration: 0.2
+  fps: 30
+  height: 1920
+  sample_rate: 44100
+  video_codec: libx264
+  width: 1080
+segment_merge:
+  enabled: true
+  max_combine_count: 3
+  min_gap_sec: 1.0
+vad:
+  chunk_size: 200
+  max_single_segment_time: 6000
+  merge_length: 1500
+  speech_noise_thres: 0.6

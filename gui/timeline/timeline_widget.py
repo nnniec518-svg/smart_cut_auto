@@ -10,43 +10,23 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGraphicsTextItem)
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QPointF
 from PyQt5.QtGui import QColor, QPen, QBrush, QFont, QPainter
-from PyQt5.QtWidgets import QGraphicsObject
 
 
-class SegmentItem(QGraphicsObject):  # 改为QGraphicsObject
+class SegmentItem(QGraphicsRectItem):
     """片段图形项"""
-    
-    segment_clicked = pyqtSignal(dict)  # 新增信号
     
     def __init__(self, segment: Dict, index: int, parent=None):
         super().__init__(parent)
         self.segment = segment
         self.index = index
-        self._rect = QRectF(0, 0, 100, 60)
         self.setFlag(QGraphicsRectItem.ItemIsMovable)
         self.setFlag(QGraphicsRectItem.ItemIsSelectable)
-        self.setAcceptHoverEvents(True)
-    
-    def boundingRect(self):
-        return self._rect
-    
-    def setRect(self, rect):
-        self._rect = rect
-        self.update()
-    
-    def paint(self, painter, option, widget):
-        painter.setBrush(QColor(70, 130, 180))
-        painter.setPen(QPen(QColor(30, 60, 100), 2))
-        painter.drawRect(self._rect)
+        self.setBrush(QColor(70, 130, 180))
+        self.setPen(QPen(QColor(30, 60, 100), 2))
     
     def get_segment_info(self) -> Dict:
         """获取片段信息"""
         return self.segment
-    
-    def mousePressEvent(self, event):
-        """点击事件"""
-        super().mousePressEvent(event)
-        self.segment_clicked.emit(self.segment)
 
 
 class TimelineWidget(QWidget):
@@ -55,7 +35,6 @@ class TimelineWidget(QWidget):
     segment_changed = pyqtSignal(dict)
     segment_deleted = pyqtSignal(int)
     segment_selected = pyqtSignal(int)
-    segment_clicked = pyqtSignal(dict)  # 新增：片段被点击
     
     def __init__(self):
         super().__init__()
@@ -137,7 +116,6 @@ class TimelineWidget(QWidget):
             
             item = SegmentItem(seg, i)
             item.setRect(rect)
-            item.segment_clicked.connect(self._on_segment_clicked)
             self.scene.addItem(item)
             
             # 片段标签
@@ -155,10 +133,6 @@ class TimelineWidget(QWidget):
         # 更新场景大小
         scene_width = max(2000, len(self.segments) * 150 + 100)
         self.scene.setSceneRect(0, 0, scene_width, 120)
-    
-    def _on_segment_clicked(self, segment: dict):
-        """片段被点击"""
-        self.segment_clicked.emit(segment)
     
     def _update_info(self):
         """更新信息"""

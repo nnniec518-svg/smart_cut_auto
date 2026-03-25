@@ -7,12 +7,17 @@
 - core/processor.py: 素材净化与分类 (VideoPurifier)
 - core/planner.py: 带状态的序列决策引擎 (SequencePlanner)
 - core/auto_cutter.py: 高性能渲染器 (FastRenderer)
+
+缓存机制优化：
+- logic_version: 控制ASR重新识别
+- script_hash: 控制文案变化时强制重新规划（内容或顺序变化）
 """
 import os
 import sys
 import time
 import logging
 import yaml
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +31,6 @@ from core.processor import VideoPurifier
 from core.planner import SequencePlanner, EmbeddingModel
 from core.auto_cutter import VideoAutoCutter
 from core.hardware import init_device, get_device_info
-from core.assembler import Assembler
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -55,12 +59,13 @@ def load_config(config_path: str = "config.yaml") -> dict:
                 "crossfade_duration": 0.2
             }
         }
-    
+
     with open(config_file, 'r', encoding='utf-8') as f:
+        import yaml
         return yaml.safe_load(f)
 
 
-def setup_logging(config: dict):
+def setup_logging(config):
     """设置日志"""
     log_dir = PROJECT_ROOT / config.get("paths", {}).get("logs_dir", "logs")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +84,172 @@ def setup_logging(config: dict):
             logging.StreamHandler()
         ]
     )
+
+
+def calculate_script_hash(script: str) -> str:
+    """
+    计算文案的MD5哈希值
+
+    用于检测文案内容或顺序变化，触发序列重新规划
+
+    Args:
+        script: 文案脚本
+
+    Returns:
+        MD5哈希值
+    """
+    # 规范化文本：去除多余空格和换行
+    normalized = '\n'.join(line.strip() for line in script.strip().split('\n') if line.strip())
+    return hashlib.md5(normalized.encode('utf-8')).hexdigest()
+
+
+def check_script_cache_valid(script: str, cache_path: Path) -> bool:
+    """
+    检查文案缓存是否有效
+
+    对比当前文案与缓存的哈希值，判断是否需要重新规划
+
+    Args:
+        script: 当前文案
+        cache_path: 缓存文件路径（temp/script_hash.txt）
+
+    Returns:
+        True表示缓存有效，False表示需要重新规划
+    """
+    import logging
+    _logger = logging.getLogger("smart_cut")
+
+    current_hash = calculate_script_hash(script)
+
+    # 读取缓存的哈希
+    if cache_path.exists():
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cached_hash = f.read().strip()
+
+            if cached_hash != current_hash:
+                _logger.info(f"文案变化检测: 哈希值不同 ({cached_hash[:8]}... -> {current_hash[:8]}...)")
+                _logger.info("将重新执行Matcher和Assembler流程")
+                return False
+
+            _logger.info(f"文案未变化，哈希值: {current_hash[:8]}... (可使用缓存)")
+            return True
+        except Exception as e:
+            _logger.warning(f"读取缓存哈希失败: {e}")
+            return False
+
+    # 首次运行，无缓存
+    return False
+
+
+def save_script_hash(script: str, cache_path: Path):
+    """
+    保存文案哈希到缓存
+
+    Args:
+        script: 文案脚本
+        cache_path: 缓存文件路径
+    """
+    import logging
+    _logger = logging.getLogger("smart_cut")
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        script_hash = calculate_script_hash(script)
+
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            f.write(script_hash)
+
+        _logger.info(f"文案哈希已保存: {script_hash[:8]}...")
+    except Exception as e:
+        _logger.warning(f"保存文案哈希失败: {e}")
+
+
+def force_clean_all_caches():
+    """
+    强制清理所有缓存（文案哈希 + logic_version + 数据库）
+
+    在文案变化或logic_version变化时调用
+    """
+    import logging
+    import sqlite3
+    import gc
+    _logger = logging.getLogger("smart_cut")
+
+    _logger.info("=== 强制清理所有缓存 ===")
+
+    project_root = Path(__file__).parent
+    temp_dir = project_root / "temp"
+    db_path = project_root / "storage" / "materials.db"
+
+    # 1. 删除文案哈希缓存
+    script_hash_path = temp_dir / "script_hash.txt"
+    if script_hash_path.exists():
+        try:
+            script_hash_path.unlink()
+            _logger.info(f"  删除文案哈希缓存")
+        except Exception as e:
+            _logger.warning(f"  删除文案哈希缓存失败: {e}")
+
+    # 2. 删除 sequence.json
+    sequence_path = temp_dir / "sequence.json"
+    if sequence_path.exists():
+        try:
+            sequence_path.unlink()
+            _logger.info(f"  删除序列缓存: sequence.json")
+        except Exception as e:
+            _logger.warning(f"  删除序列缓存失败: {e}")
+
+    # 3. 删除 logic_version.txt
+    logic_version_path = temp_dir / "logic_version.txt"
+    if logic_version_path.exists():
+        try:
+            logic_version_path.unlink()
+            _logger.info(f"  删除逻辑版本缓存")
+        except Exception as e:
+            _logger.warning(f"  删除逻辑版本缓存失败: {e}")
+
+    # 4. 清理数据库（先关闭所有连接）
+    if db_path.exists():
+        try:
+            # 触发垃圾回收，关闭未使用的连接
+            gc.collect()
+
+            # 检查数据库是否仍在被占用
+            try:
+                test_conn = sqlite3.connect(str(db_path))
+                test_conn.close()
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    _logger.warning(f"  数据库文件被占用，跳过删除: {db_path.name}")
+                    _logger.warning(f"  请关闭所有使用该数据库的程序后重试")
+                else:
+                    raise
+
+            # 文件可访问，尝试删除
+            db_path.unlink()
+            _logger.info(f"  删除数据库: {db_path.name}")
+        except PermissionError as e:
+            _logger.warning(f"  数据库文件被占用，无法删除: {db_path.name}")
+            _logger.warning(f"  错误: {e}")
+            _logger.warning(f"  建议: 重启程序或关闭其他使用该数据库的程序")
+        except Exception as e:
+            _logger.warning(f"  删除数据库失败: {e}")
+
+    # 5. 清理其他JSON缓存
+    if temp_dir.exists():
+        try:
+            for f in temp_dir.glob("*.json"):
+                if f.name not in ["sequence.json"]:  # 已经单独处理
+                    try:
+                        f.unlink()
+                        _logger.info(f"  删除缓存: {f.name}")
+                    except Exception as e:
+                        _logger.warning(f"  删除{f.name}失败: {e}")
+        except Exception as e:
+            _logger.warning(f"  清理JSON缓存失败: {e}")
+
+    _logger.info("=== 缓存清理完成 ===")
 
 
 class SmartCutController:
@@ -138,11 +309,6 @@ class SmartCutController:
             self.auto_cutter.TARGET_WIDTH = render_config.get("width", 1080)
             self.auto_cutter.TARGET_HEIGHT = render_config.get("height", 1920)
             self.auto_cutter.TARGET_FPS = render_config.get("fps", 30)
-        
-        # 初始化 Assembler（视频组装器）
-        if not hasattr(self, 'assembler'):
-            self.logger.info("初始化 Assembler...")
-            self.assembler = Assembler()
     
     def scan_materials(self, force_reprocess: bool = False) -> dict:
         """
@@ -225,38 +391,93 @@ class SmartCutController:
         
         return result
     
-    def plan_edl(self, script: str) -> list:
+    def plan_edl(self, script: str, force_replan: bool = False) -> list:
         """
         生成剪辑决策列表
-        
+
         Args:
             script: 文案脚本
-            
+            force_replan: 是否强制重新规划（忽略缓存）
+
         Returns:
             EDL 列表
         """
         self.logger.info("=" * 60)
         self.logger.info("Step 2: 文案语义编排")
         self.logger.info("=" * 60)
-        
+
         self._init_components()
-        
+
+        # 检查文案缓存
+        script_hash_path = PROJECT_ROOT / "temp" / "script_hash.txt"
+
+        # 检查logic_version是否变化（触发ASR重新识别）
+        from core.assembler import check_cache_validity, force_clean_cache, force_clean_sequence_cache
+        logic_version_changed = not check_cache_validity()
+
+        # 检查文案是否变化（触发序列重新规划）
+        script_changed = not check_script_cache_valid(script, script_hash_path) or force_replan
+
+        # 缓存清理标记（延迟到流程最后执行）
+        self._cleanup_after_render_flag = {
+            'logic_version_changed': logic_version_changed,
+            'script_changed': script_changed
+        }
+
+        # 重新初始化数据库连接和扫描素材（logic_version变化时）
+        if logic_version_changed:
+            self.logger.info("检测到logic_version变化，将在渲染完成后清理ASR和序列缓存")
+            # 关闭数据库连接并清理
+            self._close_database_connections()
+            force_clean_all_caches()
+            # 重新初始化数据库连接
+            db_path = self.config.get("database", {}).get("path", "storage/materials.db")
+            self.db = Database(db_path)
+            # 重新扫描素材
+            self.logger.info("重新扫描和识别素材...")
+            self.scan_materials(force_reprocess=True)
+            # 重新加载planner的缓存
+            if self.planner:
+                self.planner._load_materials()
+                self.logger.debug("已重新加载planner缓存")
+        elif script_changed:
+            self.logger.info("检测到文案变化（内容或顺序），将在渲染完成后清理序列缓存")
+            # 仅删除序列缓存和文案哈希
+            force_clean_sequence_cache()
+            # 重新加载planner的缓存（确保获取最新素材）
+            self.logger.info("保留现有素材数据库，仅重新规划序列")
+            if self.planner:
+                self.planner._load_materials()
+                self.logger.debug("已重新加载planner缓存")
+
         # 执行规划
-        raw_edl = self.planner.plan(script)
-        
-        # 使用 Assembler 进行排序、去重、择优
-        self.logger.info("执行排序、去重、择优...")
-        edl = self.assembler.assemble(
-            raw_edl, 
-            script=script,
-            apply_dedup=True,
-            apply_sequence_guard=True
-        )
-        
+        edl = self.planner.plan(script)
+
+        # 保存当前文案的哈希（供下次对比）
+        save_script_hash(script, script_hash_path)
+
         # 打印结果
         self._print_edl(edl)
-        
+
         return edl
+
+    def _close_database_connections(self):
+        """关闭所有数据库连接"""
+        try:
+            if self.db:
+                self.db.close()
+                self.logger.debug("已关闭数据库连接")
+        except Exception as e:
+            self.logger.warning(f"关闭数据库连接失败: {e}")
+
+        # 清空planner的缓存（不需要显式关闭，因为planner使用的是共享的数据库）
+        try:
+            if self.planner:
+                # 清空materials_cache，下次使用时会重新加载
+                self.planner.materials_cache.clear()
+                self.logger.debug("已清空planner缓存")
+        except Exception as e:
+            self.logger.warning(f"清空planner缓存失败: {e}")
     
     def _print_edl(self, edl: list):
         """打印 EDL 结果"""
@@ -329,16 +550,17 @@ class SmartCutController:
 
         return success
     
-    def run(self, script: str, output_name: str = "final_output.mp4", 
-            force_reprocess: bool = False) -> bool:
+    def run(self, script: str, output_name: str = "final_output.mp4",
+            force_reprocess: bool = False, force_replan: bool = False) -> bool:
         """
         执行完整流程
-        
+
         Args:
             script: 文案脚本
             output_name: 输出文件名
             force_reprocess: 是否强制重新处理素材
-            
+            force_replan: 是否强制重新规划（忽略文案缓存）
+
         Returns:
             是否成功
         """
@@ -351,20 +573,85 @@ class SmartCutController:
         # Step 1: 素材扫描
         self.scan_materials(force_reprocess=force_reprocess)
         
-        # Step 2: 文案编排
-        edl = self.plan_edl(script)
-        
+        # Step 2: 文案编排（自动检测文案变化）
+        edl = self.plan_edl(script, force_replan=force_replan)
+
         # Step 3: 渲染
         success = self.render(edl, output_name)
-        
+
+        # 渲染完成后自动清理缓存和数据库
+        # 暂时注释掉清理功能
+        # if success:
+        #     self._cleanup_after_render(output_name)
+
         # 统计耗时
         elapsed = time.time() - start_time
         self.logger.info("")
         self.logger.info("=" * 60)
         self.logger.info(f"流程完成! 耗时: {elapsed:.1f} 秒")
         self.logger.info("=" * 60)
-        
+
         return success
+
+    def _cleanup_after_render(self, output_name: str) -> None:
+        """执行完成后清理缓存和数据库"""
+        import shutil
+
+        self.logger.info("开始清理缓存和数据库...")
+
+        # 检查是否有待清理标记
+        cleanup_flag = getattr(self, '_cleanup_after_render_flag', {})
+        logic_version_changed = cleanup_flag.get('logic_version_changed', False)
+        script_changed = cleanup_flag.get('script_changed', False)
+
+        # 1. 清理 temp 目录（保留最终输出文件）
+        temp_dir = PROJECT_ROOT / "temp"
+        if temp_dir.exists():
+            for item in temp_dir.iterdir():
+                # 保留最终输出文件
+                if item.is_file() and item.name == output_name:
+                    continue
+                # 保留 sequence.json（可选，用于调试）
+                if item.is_file() and item.name == "sequence.json":
+                    continue
+                try:
+                    if item.is_file():
+                        item.unlink()
+                        self.logger.info(f"  删除临时文件: {item.name}")
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        self.logger.info(f"  删除临时目录: {item.name}")
+                except Exception as e:
+                    self.logger.warning(f"  删除失败: {item.name}, {e}")
+
+        # 2. 删除数据库文件（根据标记决定）
+        db_path = PROJECT_ROOT / self.config.get("database", {}).get("path", "storage/materials.db")
+        if logic_version_changed:
+            # logic_version变化时删除数据库
+            if db_path.exists():
+                try:
+                    # 先关闭数据库连接
+                    if self.db:
+                        self.db.close()
+                    db_path.unlink()
+                    self.logger.info(f"  删除数据库: {db_path.name}")
+                except Exception as e:
+                    self.logger.warning(f"  删除数据库失败: {db_path.name}, {e}")
+        elif script_changed:
+            # 文案变化时保留数据库，只删除序列缓存（已在上一步处理）
+            self.logger.info("  保留素材数据库（文案变化仅重新规划序列）")
+
+        # 3. 清理 logs 目录（可选）
+        logs_dir = PROJECT_ROOT / self.config.get("paths", {}).get("logs_dir", "logs")
+        if logs_dir.exists():
+            try:
+                for log_file in logs_dir.glob("*.log"):
+                    log_file.unlink()
+                    self.logger.info(f"  删除日志: {log_file.name}")
+            except Exception as e:
+                self.logger.warning(f"  删除日志失败: {e}")
+
+        self.logger.info("清理完成!")
     
     def close(self):
         """关闭资源"""
@@ -392,6 +679,7 @@ def main():
     parser.add_argument("-f", "--force", action="store_true", help="强制重新处理所有素材")
     parser.add_argument("-c", "--config", type=str, default="config.yaml", help="配置文件路径")
     parser.add_argument("--cpu", action="store_true", help="强制使用 CPU")
+    parser.add_argument("--replan", action="store_true", help="强制重新规划（忽略文案缓存）")
     
     args = parser.parse_args()
     
@@ -411,9 +699,7 @@ def main():
             return
     else:
         # 默认完整文案（美的京东315活动）
-        script = """你确定
-不用确定，
-我们京东315活动3C、家电政府补贴至高15%，还能跟美的代金券叠加使用
+        script = """不用确定我们京东315活动3C、家电政府补贴至高15%，还能跟美的代金券叠加使用
 我再问一下
 不用问,美的四大权益都可以享受
 权益一
@@ -440,7 +726,7 @@ def main():
     
     # 执行流程
     try:
-        success = controller.run(script, args.output, args.force)
+        success = controller.run(script, args.output, args.force, args.replan)
         
         if success:
             print(f"\n视频生成成功: {args.output}")

@@ -12,7 +12,6 @@ import json
 import time
 import subprocess
 import numpy as np
-import yaml
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 import logging
@@ -21,16 +20,87 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 
 from db.models import Asset, Segment, Database
-from core.logic_filter import LogicFilter, ClipAnalysis, ClipQuality
 from core.clip_evaluator import ClipEvaluator, ClipData, ClipScore, ClipQuality as EvaluatorQuality
+from core.config import config
 
 logger = logging.getLogger("smart_cut")
 
 # 开拍提示词正则
 CUE_PATTERN = re.compile(r"^(一|二|三|四|五|1|2|3|4|5|走|开始|准备|action|咔|好的|321|三二一)")
 
-# 静音阈值 (dB) - 与 config.yaml 保持一致
-SILENCE_THRESHOLD = -40
+
+def _apply_text_correction(text: str, correction_dict: Dict[str, str]) -> str:
+    """
+    应用本地生活纠错词典
+
+    Args:
+        text: 原始文本
+        correction_dict: 纠错词典 {错误词: 正确词}
+
+    Returns:
+        纠错后的文本
+    """
+    corrected = text
+    # 按错误词长度降序排序，避免部分替换
+    for wrong in sorted(correction_dict.keys(), key=len, reverse=True):
+        if wrong in corrected:
+            correct = correction_dict[wrong]
+            corrected = corrected.replace(wrong, correct)
+    return corrected
+
+
+def _merge_segments_by_punctuation(text: str, segments: List[Dict], max_gap: float = 0.5) -> List[Dict]:
+    """
+    根据标点符号和时长合并相邻片段
+
+    Args:
+        text: 完整文本（包含标点）
+        segments: 字符级片段列表 [{"text": char, "start": t1, "end": t2}]
+        max_gap: 最大允许间隔（秒）
+
+    Returns:
+        合并后的句子级片段列表
+    """
+    if not segments or not text:
+        return segments
+
+    # 标点符号集合（强制切分点）
+    punctuations = {',', '，', '。', '！', '？', '!', '?', ';', '；', '：', ':'}
+
+    merged_segments = []
+    current_seg = None
+
+    for i, seg in enumerate(segments):
+        char = seg.get("text", "")
+        start = seg.get("start", 0)
+        end = seg.get("end", 0)
+
+        if current_seg is None:
+            current_seg = {
+                "text": char,
+                "start": start,
+                "end": end
+            }
+        else:
+            # 检查是否需要合并
+            gap = start - current_seg["end"]
+            should_merge = (gap <= max_gap) and (i < len(text)) and (text[i-1] not in punctuations)
+
+            if should_merge:
+                current_seg["text"] += char
+                current_seg["end"] = end
+            else:
+                merged_segments.append(current_seg)
+                current_seg = {
+                    "text": char,
+                    "start": start,
+                    "end": end
+                }
+
+    if current_seg:
+        merged_segments.append(current_seg)
+
+    return merged_segments
 
 
 class VideoAsset:
@@ -56,13 +126,10 @@ class VideoAsset:
         
     def to_db_model(self) -> Asset:
         """转换为数据库模型"""
-        # 获取配置版本
-        from core.logic_filter import LogicFilter
-        
         # 转换为 Python float (避免 numpy float32 JSON 序列化问题)
         confidence = float(self.asr_confidence) if hasattr(self.asr_confidence, '__float__') else self.asr_confidence
         a_roll_score = float(self.a_roll_score) if hasattr(self.a_roll_score, '__float__') else self.a_roll_score
-        
+
         return Asset(
             file_path=self.path,
             file_name=self.name,
@@ -78,12 +145,7 @@ class VideoAsset:
                 "segments": self.segments,
                 "confidence": confidence,
                 "a_roll_score": a_roll_score,
-                "quality_status": self.quality_status,
-                # 缓存一致性检查字段
-                "config_version": LogicFilter.DEFAULT_CONFIG["config_version"],
-                "min_text_length": LogicFilter.DEFAULT_CONFIG["min_text_length"],
-                "min_confidence": LogicFilter.DEFAULT_CONFIG["min_confidence"],
-                "dedup_similarity_threshold": LogicFilter.DEFAULT_CONFIG["dedup_similarity_threshold"]
+                "quality_status": self.quality_status
             }, ensure_ascii=False),
             asr_confidence=confidence,
             a_roll_score=a_roll_score,
@@ -95,59 +157,18 @@ class VideoPurifier:
     """
     素材净化器 - 负责素材分类、ASR处理、Offset计算
     """
-    
+
     def __init__(self, db: Database):
         """
         初始化 VideoPurifier
-        
+
         Args:
             db: Database 实例
         """
         self.db = db
-        
-        # 加载配置并初始化 LogicFilter
-        self._init_logic_filter()
-    
-    def _init_logic_filter(self):
-        """从配置文件加载参数并初始化 LogicFilter 和 ClipEvaluator"""
-        try:
-            config_path = Path(__file__).parent.parent / "config.yaml"
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
-                
-                # 提取 LogicFilter 需要的配置
-                filter_config = {}
-                
-                # 从 filter 配置获取
-                if 'filter' in config:
-                    filter_config.update(config['filter'])
-                
-                # 从 vad 配置获取
-                if 'vad' in config:
-                    filter_config['min_confidence'] = config['vad'].get('speech_noise_thres', 0.8)
-                
-                # 从 classification 获取阈值
-                if 'classification' in config:
-                    filter_config['a_roll_threshold'] = config['classification'].get('a_roll_threshold', 70)
-                
-                self.logic_filter = LogicFilter(filter_config)
-                logger.info(f"LogicFilter initialized with config version: {filter_config.get('config_version', 'unknown')}")
-                
-                # 初始化 ClipEvaluator (通用 A-Roll 评分系统)
-                evaluator_config = {}
-                if 'evaluator' in config:
-                    evaluator_config = config['evaluator']
-                
-                self.evaluator = ClipEvaluator(evaluator_config)
-                logger.info(f"ClipEvaluator initialized with config: {self.evaluator.get_config_hash()[:8]}...")
-            else:
-                self.logic_filter = LogicFilter()
-                self.evaluator = ClipEvaluator()
-        except Exception as e:
-            logger.warning(f"Failed to load config: {e}")
-            self.logic_filter = LogicFilter()
-            self.evaluator = ClipEvaluator()
+
+        # 使用全局配置初始化 ClipEvaluator
+        self.evaluator = ClipEvaluator()
         
     def _run_ffprobe(self, video_path: str) -> Dict:
         """
@@ -420,11 +441,19 @@ class VideoPurifier:
                     scores = [t.get("score", 0.0) for t in tokens_data if isinstance(t, dict) and t.get("score", 0.0) > 0]
                     if scores:
                         confidence = sum(scores) / len(scores)
-            
-            # 转换为 segments 格式
+
+            # ========== 应用本地生活纠错 ==========
+            correction_dict = config.get("correction_dict", {})
+            if correction_dict:
+                original_text = text
+                text = _apply_text_correction(text, correction_dict)
+                if text != original_text:
+                    logger.debug(f"ASR纠错: {original_text} -> {text}")
+
+            # 转换为字符级 segments 格式
             segments = []
             text_chars = list(text.replace(" ", ""))
-            
+
             for i, ts in enumerate(word_timestamps):
                 if len(ts) >= 2:
                     char = text_chars[i] if i < len(text_chars) else ""
@@ -434,8 +463,14 @@ class VideoPurifier:
                         "end": ts[1] / 1000.0,
                         "timestamp": [ts]
                     })
-            
-            logger.debug(f"ASR 置信度: {confidence:.4f}")
+
+            # ========== 根据标点符号合并片段 ==========
+            merge_config = config.get("segment_merge", {})
+            if merge_config and merge_config.get("enabled", False):
+                max_gap = merge_config.get("min_gap_sec", 0.5)
+                segments = _merge_segments_by_punctuation(text, segments, max_gap)
+
+            logger.debug(f"ASR 置信度: {confidence:.4f}, 片段数: {len(segments)}")
             return text, segments, confidence
             
         except Exception as e:
@@ -880,38 +915,38 @@ def should_reprocess(video_path: str, db: Database, force_reprocess: bool = Fals
     
     # 2. 增强缓存一致性检查：检查配置版本
     try:
-        from core.logic_filter import LogicFilter
+        from core.config import config
         session = db.get_session()
         asset = session.query(Asset).filter_by(file_path=video_path).first()
-        
+
         if asset:
-            # 检查配置版本
+            # 检查评分器配置版本
             transcript = asset.transcript_json
             if transcript:
                 import json
                 data = json.loads(transcript)
-                cached_config_version = data.get("config_version", "0")
-                current_config_version = LogicFilter.get_config_version()
-                
-                if cached_config_version != current_config_version:
+                cached_version = data.get("config_version", "0")
+                current_version = config.evaluator_config.get("config_version", "2.0")
+
+                if cached_version != current_version:
                     logger.info(
                         f"Config version mismatch for {video_path}: "
-                        f"cached={cached_config_version}, current={current_config_version}"
+                        f"cached={cached_version}, current={current_version}"
                     )
                     return True
-                    
-                # 检查关键参数是否变化
-                key_params = ['min_text_length', 'min_confidence', 'dedup_similarity_threshold']
+
+                # 检查关键评分参数是否变化
+                key_params = ['min_score', 'min_text_length', 'dedup_similarity_threshold']
                 for param in key_params:
                     cached_val = data.get(param)
-                    current_val = LogicFilter.DEFAULT_CONFIG.get(param)
+                    current_val = config.evaluator_config.get(param)
                     if cached_val != current_val:
                         logger.info(f"Config parameter changed: {param}")
                         return True
-                        
+
     except Exception as e:
         logger.warning(f"Cache consistency check failed: {e}")
-    
+
     return False
 
 
@@ -929,12 +964,12 @@ if __name__ == "__main__":
     # 打印统计
     a_roll = [a for a in assets if a.track_type == "A_ROLL"]
     b_roll = [a for a in assets if a.track_type == "B_ROLL"]
-    
-    print(f"\n=== 处理结果 ===")
-    print(f"总计: {len(assets)}")
-    print(f"A_ROLL: {len(a_roll)}")
-    print(f"B_ROLL: {len(b_roll)}")
-    
-    print(f"\n=== A_ROLL 素材 Offset ===")
+
+    logger.info(f"\n=== 处理结果 ===")
+    logger.info(f"总计: {len(assets)}")
+    logger.info(f"A_ROLL: {len(a_roll)}")
+    logger.info(f"B_ROLL: {len(b_roll)}")
+
+    logger.info(f"\n=== A_ROLL 素材 Offset ===")
     for a in a_roll[:10]:
-        print(f"{a.name}: offset={a.valid_start_offset:.3f}s")
+        logger.info(f"{a.name}: offset={a.valid_start_offset:.3f}s")

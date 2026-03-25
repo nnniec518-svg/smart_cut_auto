@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能视频剪辑系统 - 项目流程文档</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: "Microsoft YaHei", "PingFang SC", sans-serif; 
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            line-height: 1.8;
+            min-height: 100vh;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+        h1 { 
+            text-align: center; 
+            color: #00d4ff; 
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
+        }
+        .subtitle { 
+            text-align: center; 
+            color: #888; 
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+        h2 {
+            color: #00d4ff;
+            border-left: 4px solid #00d4ff;
+            padding-left: 15px;
+            margin: 40px 0 20px;
+            font-size: 1.5em;
+        }
+        h3 { color: #ff6b6b; margin: 25px 0 15px; font-size: 1.2em; }
+        .step {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 25px;
+            border: 1px solid rgba(0, 212, 255, 0.2);
+            transition: all 0.3s ease;
+        }
+        .step:hover { transform: translateY(-3px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); }
+        .step-num {
+            display: inline-block;
+            background: linear-gradient(135deg, #00d4ff, #0099cc);
+            color: #000;
+            width: 35px;
+            height: 35px;
+            line-height: 35px;
+            text-align: center;
+            border-radius: 50%;
+            font-weight: bold;
+            margin-right: 15px;
+        }
+        .step-title { display: inline-block; font-size: 1.3em; color: #fff; }
+        
+        .flow-chart {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px;
+            margin: 30px 0;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 15px;
+        }
+        .flow-box {
+            padding: 15px 25px;
+            background: linear-gradient(135deg, #2d3561, #1a1a2e);
+            border-radius: 10px;
+            border: 1px solid #00d4ff;
+            text-align: center;
+            min-width: 150px;
+        }
+        .flow-box.arrow::after { content: "→"; margin-left: 15px; color: #00d4ff; font-size: 1.5em; }
+        
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        th { background: rgba(0, 212, 255, 0.1); color: #00d4ff; }
+        tr:hover { background: rgba(255,255,255,0.03); }
+        
+        code {
+            background: rgba(0, 212, 255, 0.15);
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: #00d4ff;
+            font-family: "Consolas", monospace;
+        }
+        
+        .highlight { color: #ff6b6b; font-weight: bold; }
+        .success { color: #00ff88; }
+        .info { color: #ffd93d; }
+        
+        .module-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .module-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+        }
+        .module-card h4 { color: #00d4ff; margin-bottom: 10px; }
+        
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .feature-card {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(0, 0, 0, 0.2));
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .feature-card h4 { color: #00ff88; margin-bottom: 10px; }
+        
+        .config-section { background: rgba(0, 0, 0, 0.3); padding: 20px; border-radius: 10px; margin: 20px 0; }
+        
+        .footer {
+            text-align: center;
+            padding: 40px 0;
+            color: #666;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 智能视频剪辑系统</h1>
+        <p class="subtitle">Smart Cut Auto - 项目流程与技术文档</p>
+        
+        <!-- 核心流程图 -->
+        <div class="flow-chart">
+            <div class="flow-box">📁 素材扫描</div>
+            <div class="flow-box arrow"></div>
+            <div class="flow-box">🧠 文案解析</div>
+            <div class="flow-box arrow"></div>
+            <div class="flow-box">📝 序列规划</div>
+            <div class="flow-box arrow"></div>
+            <div class="flow-box">🎥 FFmpeg合成</div>
+            <div class="flow-box arrow"></div>
+            <div class="flow-box">🧹 自动清理</div>
+        </div>
+        
+        <!-- 目录 -->
+        <h2>📋 目录</h2>
+        <ol style="margin-left: 20px; color: #aaa;">
+            <li><a href="#step1" style="color: #00d4ff;">Step 1: 素材扫描与净化</a></li>
+            <li><a href="#step2" style="color: #00d4ff;">Step 2: 文案语义解析</a></li>
+            <li><a href="#step3" style="color: #00d4ff;">Step 3: 序列规划与匹配</a></li>
+            <li><a href="#step4" style="color: #00d4ff;">Step 4: FFmpeg 渲染合成</a></li>
+            <li><a href="#core-modules" style="color: #00d4ff;">核心模块说明</a></li>
+            <li><a href="#optimizations" style="color: #00d4ff;">算法优化</a></li>
+            <li><a href="#config" style="color: #00d4ff;">配置说明</a></li>
+        </ol>
+        
+        <!-- Step 1 -->
+        <h2 id="step1"><span class="step-num">1</span>素材扫描与净化</h2>
+        <div class="step">
+            <h3>📁 VideoPurifier (processor.py)</h3>
+            <p>对原始视频素材进行预处理，提取有效片段并分类。</p>
+            
+            <h3>处理流程</h3>
+            <table>
+                <tr><th>步骤</th><th>说明</th></tr>
+                <tr><td>1. 音频提取</td><td>使用 FFmpeg 提取视频音频</td></tr>
+                <tr><td>2. VAD 检测</td><td>使用 FunASR 进行语音活动检测，获取静音段</td></tr>
+                <tr><td>3. 音量分析</td><td>计算平均音量，低于阈值(-40dB)标记为 B_ROLL</td></tr>
+                <tr><td>4. ASR 识别</td><td>调用 FunASR 获取词级时间戳和文本</td></tr>
+                <tr><td>5. 提示词检测</td><td>正则匹配 "321"、"走"、"开始" 等开拍提示词</td></tr>
+                <tr><td>6. 逻辑过滤</td><td>过滤无效片段（过短、过密、置信度低）</td></tr>
+                <tr><td>7. 质量评估</td><td>计算 A_Roll 分数，入围 B_Roll 候选</td></tr>
+            </table>
+            
+            <h3>输出</h3>
+            <ul style="margin-left: 20px; color: #aaa;">
+                <li><code>track_type</code>: "A_ROLL" 或 "B_ROLL"</li>
+                <li><code>valid_start_offset</code>: 有效片段起始时间（跳过提示词）</li>
+                <li><code>asr_text</code>: 完整 ASR 文本</li>
+                <li><code>segments</code>: 带时间戳的文本片段列表</li>
+            </ul>
+        </div>
+        
+        <!-- Step 2 -->
+        <h2 id="step2"><span class="step-num">2</span>文案语义解析</h2>
+        <div class="step">
+            <h3>🧠 Matcher (matcher.py)</h3>
+            <p>将目标文案与素材进行语义匹配。</p>
+            
+            <h3>核心功能</h3>
+            <table>
+                <tr><th>功能</th><th>说明</th></tr>
+                <tr><td>语义模型</td><td>使用 <code>paraphrase-multilingual-MiniLM-L12-v2</code> 多语言模型</td></tr>
+                <tr><td>文本预处理</td><td>去除空格、标点，统一大小写</td></tr>
+                <tr><td>相似度计算</td><td>余弦相似度 + 词重叠 + LCS 综合评分</td></tr>
+                <tr><td>分句处理</td><td>按句号、问号、感叹号分句</td></tr>
+            </table>
+            
+            <h3>算法优化 (v2.0)</h3>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>🔤 语义指纹去重</h4>
+                    <p>使用 Levenshtein 编辑距离 (< 5) 去除重复文案</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📍 滑动窗口匹配</h4>
+                    <p>只搜索最近30个句子，强制按顺序匹配</p>
+                </div>
+                <div class="feature-card">
+                    <h4>⚖️ 索引距离惩罚</h4>
+                    <p>离预期位置越远扣分越多，强制顺序匹配</p>
+                </div>
+                <div class="feature-card">
+                    <h4>⏱️ 时间戳Padding</h4>
+                    <p>前后各加0.2秒，防止ASR截断吞字</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Step 3 -->
+        <h2 id="step3"><span class="step-num">3</span>序列规划与匹配</h2>
+        <div class="step">
+            <h3>📝 Assembler / SequencePlanner</h3>
+            <p>根据目标文案，从素材库中选择最佳片段组成序列。</p>
+            
+            <h3>核心算法</h3>
+            <table>
+                <tr><th>阶段</th><th>说明</th></tr>
+                <tr><td>1. 全文对齐</td><td>脚本驱动的全局匹配</td></tr>
+                <tr><td>2. 语义归一化</td><td>去除标点、助词，提取核心词</td></tr>
+                <tr><td>3. 唯一性锁定</td><td>每个素材片段只能使用一次</td></tr>
+                <tr><td>4. 末次优先</td><td>同内容多版本时，选择最后录制的</td></tr>
+                <tr><td>5. 排序优化</td><td>完整性分数 + 录制时间综合排序</td></tr>
+            </table>
+            
+            <h3>缓存机制</h3>
+            <div class="config-section">
+                <p><code>logic_version</code> 配置用于强制刷新缓存：</p>
+                <ul style="margin-left: 20px; color: #aaa;">
+                    <li>修改 <code>config.yaml</code> 中的 <code>logic_version</code></li>
+                    <li>系统自动检测版本变化，清理旧缓存</li>
+                </ul>
+            </div>
+        </div>
+        
+        <!-- Step 4 -->
+        <h2 id="step4"><span class="step-num">4</span>FFmpeg 渲染合成</h2>
+        <div class="step">
+            <h3>🎥 VideoAutoCutter / VideoProcessor</h3>
+            <p>使用 FFmpeg 进行视频裁剪、拼接、转码。</p>
+            
+            <h3>处理流程</h3>
+            <table>
+                <tr><th>步骤</th><th>说明</th></tr>
+                <tr><td>1. 时间裁剪</td><td>根据时间戳提取有效片段</td></tr>
+                <tr><td>2. 分辨率统一</td><td>统一缩放到 1080x1920 (9:16竖版)</td></tr>
+                <tr><td>3. 帧率转换</td><td>统一转换为 30fps</td></tr>
+                <tr><td>4. 视频拼接</td><td>使用 concat 滤镜合并多个片段</td></tr>
+                <tr><td>5. 音频归一化</td><td>loudnorm 滤镜统一音量</td></tr>
+            </table>
+            
+            <h3>输出配置</h3>
+            <ul style="margin-left: 20px; color: #aaa;">
+                <li>分辨率: 1080 x 1920</li>
+                <li>帧率: 30fps</li>
+                <li>编码: libx264, CRF=18</li>
+                <li>音频: AAC, 128kbps</li>
+            </ul>
+        </div>
+        
+        <!-- 核心模块 -->
+        <h2 id="core-modules">🧩 核心模块说明</h2>
+        <div class="module-list">
+            <div class="module-card">
+                <h4>main.py</h4>
+                <p>系统入口，CLI命令行工具，协调全流程</p>
+            </div>
+            <div class="module-card">
+                <h4>db/models.py</h4>
+                <p>SQLAlchemy数据模型，素材数据持久化</p>
+            </div>
+            <div class="module-card">
+                <h4>core/processor.py</h4>
+                <p>VideoPurifier - 素材净化与分类</p>
+            </div>
+            <div class="module-card">
+                <h4>core/planner.py</h4>
+                <p>SequencePlanner - 序列决策引擎</p>
+            </div>
+            <div class="module-card">
+                <h4>core/assembler.py</h4>
+                <p>Assembler - 脚本对齐、去重、择优</p>
+            </div>
+            <div class="module-card">
+                <h4>core/matcher.py</h4>
+                <p>Matcher - 语义匹配、句子匹配</p>
+            </div>
+            <div class="module-card">
+                <h4>core/auto_cutter.py</h4>
+                <p>VideoAutoCutter - 渲染控制器</p>
+            </div>
+            <div class="module-card">
+                <h4>core/video_processor.py</h4>
+                <p>VideoProcessor - FFmpeg 封装</p>
+            </div>
+            <div class="module-card">
+                <h4>core/hardware.py</h4>
+                <p>硬件检测，GPU/CPU 自动选择</p>
+            </div>
+            <div class="module-card">
+                <h4>core/asr.py</h4>
+                <p>FunASR 封装，语音识别</p>
+            </div>
+        </div>
+        
+        <!-- 算法优化 -->
+        <h2 id="optimizations">⚡ 算法优化 (v2.0)</h2>
+        <div class="step">
+            <h3>匹配算法改进</h3>
+            <table>
+                <tr><th>优化项</th><th>v1.0</th><th>v2.0</th></tr>
+                <tr><td>语义模型</td><td>all-MiniLM-L6-v2</td><td class="success">paraphrase-multilingual-MiniLM-L12-v2</td></tr>
+                <tr><td>相似度阈值</td><td>0.8</td><td class="success">0.6</td></tr>
+                <tr><td>搜索策略</td><td>全局搜索</td><td class="success">滑动窗口(30句)</td></tr>
+                <tr><td>顺序约束</td><td>时间相邻奖励</td><td class="success">索引距离惩罚</td></tr>
+                <tr><td>去重机制</td><td>无</td><td class="success">Levenshtein距离<5</td></tr>
+                <tr><td>版本控制</td><td>无</td><td class="success">logic_version</td></tr>
+            </table>
+            
+            <h3>调试日志</h3>
+            <div class="config-section">
+                <p>开启 DEBUG 模式查看匹配详情：</p>
+                <pre style="background: #000; padding: 15px; border-radius: 8px; overflow-x: auto; color: #0f0; font-size: 0.9em;">
+Target: '下单立减' | Window: [0-30] | LastIdx: -1
+  Candidates: idx5(sim0.82->final0.82) | idx25(sim0.75->final0.65) | idx50(sim0.80->final0.40)
+  -> WINNER: idx5 sim=0.82 final=0.82</pre>
+            </div>
+        </div>
+        
+        <!-- 配置说明 -->
+        <h2 id="config">⚙️ 配置说明</h2>
+        <div class="step">
+            <h3>config.yaml 主要配置</h3>
+            <table>
+                <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
+                <tr><td>models.asr_model</td><td>FunASR 模型</td><td>paraformer-large</td></tr>
+                <tr><td>models.fallback_embedding</td><td>语义模型</td><td>paraphrase-multilingual-MiniLM-L12-v2</td></tr>
+                <tr><td>filter.logic_version</td><td>逻辑版本(刷新缓存)</td><td>"2.0"</td></tr>
+                <tr><td>render.width/height</td><td>目标分辨率</td><td>1080x1920</td></tr>
+                <tr><td>render.crf</td><td>编码质量</td><td>18</td></tr>
+                <tr><td>classification.silence_threshold</td><td>静音阈值(dB)</td><td>-40</td></tr>
+                <tr><td>matching.penalty_repeat</td><td>重复惩罚</td><td>0.8</td></tr>
+            </table>
+            
+            <h3>命令行用法</h3>
+            <div class="config-section">
+                <pre style="background: #000; padding: 15px; border-radius: 8px; overflow-x: auto; color: #0f0;">
+# 基本用法
+python main.py -s script.txt -o output.mp4
+
+# 强制重新处理素材
+python main.py -s script.txt -f
+
+# 指定配置文件
+python main.py -s script.txt -c my_config.yaml
+
+# 强制使用CPU
+python main.py --cpu</pre>
+            </div>
+        </div>
+        
+        <!-- 自动清理 -->
+        <h2>🧹 自动清理机制</h2>
+        <div class="step">
+            <p>渲染完成后，系统自动清理以下文件：</p>
+            <ul style="margin-left: 20px; color: #aaa;">
+                <li><code>temp/</code> 目录下的临时文件（保留最终输出）</li>
+                <li><code>storage/materials.db</code> 数据库文件</li>
+                <li><code>logs/</code> 目录下的日志文件</li>
+            </ul>
+            <p class="highlight" style="margin-top: 15px;">注：如需保留中间结果用于调试，可手动保留 sequence.json</p>
+        </div>
+        
+        <div class="footer">
+            <p>智能视频剪辑系统 | Smart Cut Auto v2.0</p>
+            <p>基于 FunASR + Sentence-Transformers + FFmpeg</p>
+        </div>
+    </div>
+</body>
+</html>

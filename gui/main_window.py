@@ -12,8 +12,6 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QSplitter, QTabWidget, QStatusBar, QMenuBar, QMenu,
                              QAction, QMessageBox, QFileDialog, QLabel, QProgressBar)
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtGui import QIcon, QPixmap
 
@@ -35,7 +33,6 @@ logger = setup_logger("gui")
 class WorkerThread(QThread):
     """后台工作线程"""
     progress = pyqtSignal(int, str)
-    progress_update = pyqtSignal(int)  # 线程安全的进度条更新
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
     
@@ -269,7 +266,6 @@ class MainWindow(QMainWindow):
         # 时间线信号
         self.timeline_widget.segment_changed.connect(self.on_segment_changed)
         self.timeline_widget.segment_deleted.connect(self.on_segment_deleted)
-        self.timeline_widget.segment_clicked.connect(self.on_segment_clicked)
         
         # 预览信号
         self.preview_panel.preview_requested.connect(self.on_preview_requested)
@@ -364,101 +360,43 @@ class MainWindow(QMainWindow):
         """异步导出视频"""
         self.status_label.setText("正在导出视频...")
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setValue(10)
         
-        # 创建WorkerThread并获取进度信号
-        worker = WorkerThread(lambda: self._export_task(output_path))
-        
-        # 连接信号
-        worker.progress.connect(self._on_progress)
-        worker.progress_update.connect(self._on_progress_update)
-        worker.finished.connect(self._on_export_finished)
-        worker.error.connect(self._on_error)
-        
-        self.worker = worker
-        worker.start()
-    
-    def _export_task(self, output_path: str):
-        """实际的导出任务"""
-        import traceback
-        import subprocess
-        try:
-            # 获取进度信号
-            progress_signal = self.worker.progress_update if self.worker else None
-            
-            # 测试ffmpeg是否可用
-            try:
-                result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
-                if result.returncode != 0:
-                    raise Exception("ffmpeg not available")
-            except Exception as e:
-                logger.error(f"ffmpeg检查失败: {e}")
-                raise Exception("请安装ffmpeg并确保已添加到系统PATH")
-            
+        def task():
             # 收集所有片段
-            segments = (self.project_data or {}).get("segments", [])
-            total_segments = len(segments)
+            segments = self.project_data.get("segments", [])
             
-            # 裁剪每个片段 (0-40%)
+            # 裁剪每个片段
             cropped_files = []
             
             for i, seg in enumerate(segments):
-                # 跳过缺失的片段
-                if seg.get("missing", False):
-                    logger.warning(f"片段 {i} 匹配缺失，跳过")
-                    continue
-                
                 material_idx = seg.get("material_index")
-                if material_idx is None or material_idx < 0:
-                    logger.error(f"片段 {i} 没有有效的material_index")
-                    continue
-                    
                 start = seg.get("start", 0)
                 end = seg.get("end", 0)
-                
-                # 跳过无效时长
-                if end <= start:
-                    logger.warning(f"片段 {i} 时长无效 ({start}, {end})，跳过")
-                    continue
                 
                 material = self.project_data["materials"][material_idx]
                 input_path = material["path"]
                 
                 output_file = f"temp/cropped_{i}.mp4"
                 
-                success = self.video_processor.crop_video(
+                self.video_processor.crop_video(
                     input_path, output_file, start, end
                 )
-                if success:
-                    cropped_files.append(output_file)
-                else:
-                    logger.error(f"裁剪片段 {i} 失败，跳过")
-                
-                # 更新进度
-                if progress_signal:
-                    progress_signal.emit(int((i + 1) / total_segments * 40))
+                cropped_files.append(output_file)
             
-            # 拼接 (40%-85%)
-            if len(cropped_files) == 0:
-                raise ValueError("没有可用的视频片段")
-            elif len(cropped_files) == 1:
+            self.progress_bar.setValue(50)
+            
+            # 拼接
+            if len(cropped_files) == 1:
                 final_video = cropped_files[0]
-                if progress_signal:
-                    progress_signal.emit(85)
             else:
                 final_video = "temp/concat.mp4"
-                success = self.video_processor.concat_videos(
-                    cropped_files, final_video,
-                    progress_callback=lambda p: progress_signal.emit(40 + int(p * 0.45)) if progress_signal else None
-                )
-                if not success:
-                    raise RuntimeError(f"视频拼接失败，请查看日志")
+                self.video_processor.concat_videos(cropped_files, final_video)
             
-            # 生成字幕 (85%-95%)
-            if progress_signal:
-                progress_signal.emit(85)
+            self.progress_bar.setValue(70)
             
-            asr_result = ((self.project_data or {}).get("result") or {}).get("asr_result")
+            # 生成字幕
+            asr_result = self.project_data.get("result", {}).get("asr_result")
             
             if asr_result:
                 ass_file = "temp/subtitle.ass"
@@ -478,15 +416,15 @@ class MainWindow(QMainWindow):
                 import shutil
                 shutil.copy(final_video, output_path)
             
-            if progress_signal:
-                progress_signal.emit(100)
+            self.progress_bar.setValue(100)
             
             return output_path
-            
-        except Exception as e:
-            logger.error(f"导出任务失败: {e}")
-            logger.error(traceback.format_exc())
-            raise
+        
+        self.worker = WorkerThread(task)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_export_finished)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
     
     def show_settings(self):
         """显示设置对话框"""
@@ -534,26 +472,6 @@ class MainWindow(QMainWindow):
             self.project_data["segments"].pop(index)
             logger.debug(f"Segment deleted: {index}")
     
-    def on_segment_clicked(self, segment: dict):
-        """点击时间线片段，加载对应素材视频"""
-        # 获取素材索引
-        material_index = segment.get("material_index")
-        if material_index is not None and 0 <= material_index < len(self.project_data["materials"]):
-            # 使用素材索引直接获取原始视频路径
-            material = self.project_data["materials"][material_index]
-            video_path = material.get("path")
-            
-            if video_path:
-                from pathlib import Path
-                if Path(video_path).exists():
-                    self.preview_panel.load_video(video_path)
-                    # 跳转到片段开始时间
-                    start_time = segment.get("start", 0) * 1000  # 转换为毫秒
-                    self.preview_panel.seek(int(start_time))
-                    logger.info(f"Loaded video for preview: {video_path}, start at {start_time}ms")
-                else:
-                    logger.warning(f"Video file not found: {video_path}")
-    
     def on_preview_requested(self, timestamp: float):
         """预览请求"""
         pass
@@ -570,11 +488,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请先导入素材")
             return
         
-        # 检查是否正在运行
-        if self.worker is not None and self.worker.isRunning():
-            QMessageBox.warning(self, "警告", "分析正在进行中，请等待完成")
-            return
-        
         # 确保模型已加载
         try:
             self._ensure_models_loaded()
@@ -586,122 +499,46 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         
-        # 创建新的WorkerThread并获取其progress_update信号
-        worker = WorkerThread(lambda: self._analyze_task())
-        progress_signal = worker.progress_update
-        
-        # 连接信号
-        worker.progress.connect(self._on_progress)
-        worker.progress_update.connect(self._on_progress_update)
-        worker.finished.connect(self._on_analyze_finished)
-        worker.error.connect(self._on_error)
-        
-        self.worker = worker
-        worker.start()
-        return
-
-    def _analyze_task(self):
-        """实际的素材分析任务"""
-        import hashlib
-        import json
-        
-        # 重新获取信号引用
-        from PyQt5.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is None:
-            return None
-        
-        target_text = self.project_data["text"]
-        results = [None] * len(self.project_data["materials"])
-        completed_count = 0
-        total = len(self.project_data["materials"])
-        
-        # 获取progress_update信号用于更新进度条
-        progress_signal = self.worker.progress_update if self.worker else None
-        
-        # 缓存目录
-        cache_dir = Path("storage/material_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 获取线程数
-        max_workers = min(4, total)
-        
-        # 使用锁确保线程安全
-        lock = threading.Lock()
-        
-        def get_cache_path(material_path):
-            path_hash = hashlib.md5(str(material_path).encode()).hexdigest()
-            return cache_dir / f"{path_hash}.json"
-        
-        def process_material_wrapper(args):
-            idx, material = args
-            cache_path = get_cache_path(material["path"])
+        def task():
+            target_text = self.project_data["text"]
+            results = []
             
-            # 检查缓存
-            if cache_path.exists():
-                try:
-                    with open(cache_path, 'r', encoding='utf-8') as f:
-                        cached_result = json.load(f)
-                    logger.info(f"从缓存加载: {material['path']}")
-                    return idx, cached_result
-                except Exception as e:
-                    logger.warning(f"读取缓存失败: {e}")
+            total = len(self.project_data["materials"])
             
-            try:
+            for i, material in enumerate(self.project_data["materials"]):
+                self.progress_bar.setValue(int((i / total) * 80))
+                
                 result = self.matcher.process_single_material(
                     material["path"],
                     target_text,
                     self.asr_model,
                     self.audio_processor,
-                    silence_threshold=self.config.get("silence_threshold", 0.3)
+                    silence_threshold=self.config.get("silence_threshold", 1.5)
                 )
                 
-                # 保存到缓存
-                try:
-                    with open(cache_path, 'w', encoding='utf-8') as f:
-                        json.dump(result, f, ensure_ascii=False, indent=2)
-                    logger.debug(f"已缓存: {material['path']}")
-                except Exception as e:
-                    logger.warning(f"保存缓存失败: {e}")
+                results.append(result)
                 
-                return idx, result
-            except Exception as e:
-                logger.error(f"处理素材失败: {material['path']}, {e}")
-                return idx, None
-        
-        # 使用线程池并行处理
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(process_material_wrapper, (i, mat)): i 
-                for i, mat in enumerate(self.project_data["materials"])
-            }
+                # 更新素材信息
+                material["result"] = result
             
-            for future in as_completed(futures):
-                idx, result = future.result()
-                results[idx] = result
-                
-                self.project_data["materials"][idx]["result"] = result
-                
-                # 更新进度 - 使用信号线程安全地更新
-                with lock:
-                    completed_count += 1
-                    progress = int((completed_count / total) * 80)
-                    if progress_signal:
-                        progress_signal.emit(progress)
+            # 决策
+            self.progress_bar.setValue(90)
+            
+            decision = self.matcher.decide_best_materials(
+                results,
+                target_text,
+                single_threshold=self.config.get("single_threshold", 0.85)
+            )
+            
+            self.project_data["segments"] = decision.get("segments", [])
+            
+            return decision
         
-        # 决策
-        if progress_signal:
-            progress_signal.emit(90)
-        
-        decision = self.matcher.decide_best_materials(
-            results,
-            target_text,
-            single_threshold=self.config.get("single_threshold", 0.85)
-        )
-        
-        self.project_data["segments"] = decision.get("segments", [])
-        
-        return decision
+        self.worker = WorkerThread(task)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_analyze_finished)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
     
     def generate_video(self):
         """生成视频"""
@@ -727,10 +564,6 @@ class MainWindow(QMainWindow):
         """进度更新"""
         self.progress_bar.setValue(value)
         self.status_label.setText(message)
-    
-    def _on_progress_update(self, value: int):
-        """线程安全的进度条更新"""
-        self.progress_bar.setValue(value)
     
     def _on_analyze_finished(self, result: Any):
         """分析完成"""
@@ -770,17 +603,8 @@ class MainWindow(QMainWindow):
         # 保存配置
         save_config(self.config)
         
-        # 停止工作线程
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.quit()
-            self.worker.wait(3000)  # 等待最多3秒
-        
         # 清理临时文件
         from core.utils import clean_temp_files
         clean_temp_files()
         
         event.accept()
-        
-        # 强制退出
-        import sys
-        sys.exit(0)

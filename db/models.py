@@ -282,10 +282,10 @@ if __name__ == "__main__":
     )
     
     saved_asset = db.add_asset(asset)
-    print(f"保存素材: {saved_asset}")
-    
+    logger.info(f"保存素材: {saved_asset}")
+
     # 查询
     assets = db.get_assets_by_type("A_ROLL")
-    print(f"A_ROLL 素材数量: {len(assets)}")
+    logger.info(f"A_ROLL 素材数量: {len(assets)}")
     
     db.close()

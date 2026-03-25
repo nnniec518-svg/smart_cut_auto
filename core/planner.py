@@ -33,45 +33,89 @@ MODELS_DIR = PROJECT_ROOT / "models"
 
 class EmbeddingModel:
     """向量嵌入模型封装 - BGE-M3 原生接口（禁止分词）"""
-    
-    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"):
+
+    def __init__(self, model_name: str = None):
         """
         初始化嵌入模型
-        
+
         Args:
-            model_name: 模型名称，默认为多语言 MiniLM（兼容 torch 2.4.1）
+            model_name: 模型名称，默认从 config.yaml 读取
         """
+        # 从配置文件读取模型名称
+        if model_name is None:
+            from core.config import config
+            model_name = config.get("models", {}).get("embedding_model", "paraphrase-multilingual-MiniLM-L12-v2")
+
         self.model_name = model_name
         self.model = None
         self.tokenizer = None
         self._load_model()
     
     def _load_model(self):
-        """加载 BGE-M3 模型"""
+        """加载向量模型（支持本地缓存和镜像）"""
         try:
             from sentence_transformers import SentenceTransformer
+            import os
 
             # 获取调整后的批量大小
             from core.hardware import set_batch_size_for_igpu
             self.batch_size = set_batch_size_for_igpu(32)
 
-            logger.info(f"Loading BGE-M3 model via SentenceTransformer: {self.model_name}")
+            logger.info(f"Loading embedding model: {self.model_name}")
             logger.info(f"Batch size: {self.batch_size}")
 
-            # ====== CPU 设备加载 ======
-            # DirectML 与 sentence-transformers inference_mode 存在兼容性冲突，暂时使用 CPU
-            self.model = SentenceTransformer(
-                self.model_name,
-                device="cpu"
-            )
-            logger.info("BGE-M3 model loaded on CPU (DirectML compatibility issue)")
+            # 强制使用离线模式（避免网络请求）
+            os.environ['HF_HUB_OFFLINE'] = '1'
+
+            # 设置本地缓存目录
+            cache_folder = str(MODELS_DIR / "sentence_transformers")
+
+            # 构建本地模型路径
+            local_model_path = MODELS_DIR / "sentence_transformers" / f"models--{self.model_name.replace('/', '--')}"
+
+            # 检查本地是否存在
+            if local_model_path.exists():
+                logger.info(f"Using local cached model: {self.model_name}")
+                self.model = SentenceTransformer(
+                    self.model_name,
+                    device="cpu",
+                    cache_folder=cache_folder
+                )
+                logger.info(f"Model loaded from local cache: {self.model_name}")
+            else:
+                logger.warning(f"Model not found in local cache: {local_model_path}")
+                self.model = SentenceTransformer(
+                    self.model_name,
+                    device="cpu",
+                    cache_folder=cache_folder
+                )
+                logger.info(f"Model loaded: {self.model_name}")
 
             # 使用模型自带的 tokenizer
             self.tokenizer = self.model.tokenizer
 
         except Exception as e:
-            logger.error(f"Failed to load BGE-M3: {e}")
-            raise RuntimeError(f"模型加载失败: {e}")
+            logger.error(f"Failed to load embedding model: {e}")
+            # 尝试使用降级模型
+            try:
+                from core.config import config
+                fallback_model = config.get("models", {}).get("fallback_embedding", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
+                if fallback_model != self.model_name:
+                    logger.info(f"Trying fallback model: {fallback_model}")
+                    self.model_name = fallback_model
+                    self.model = SentenceTransformer(
+                        self.model_name,
+                        device="cpu",
+                        cache_folder=str(MODELS_DIR / "sentence_transformers")
+                    )
+                    self.tokenizer = self.model.tokenizer
+                    logger.info(f"Fallback model loaded: {self.model_name}")
+                    return
+            except Exception as fallback_error:
+                logger.error(f"Failed to load fallback model: {fallback_error}")
+
+            raise RuntimeError(f"模型加载失败: {e}\n提示：请检查网络连接或使用本地缓存的模型")
     
     def encode(self, texts: List[str], batch_size: int = None) -> np.ndarray:
         """
@@ -873,10 +917,10 @@ if __name__ == "__main__":
     edl = planner.plan(SCRIPT)
     
     # 打印结果
-    print("\n=== EDL Result ===")
+    logger.info("\n=== EDL Result ===")
     for i, clip in enumerate(edl):
         status = "OK" if not clip.get("missing") else "XX"
-        print(f"{status} [{i+1}] {clip.get('text', '')[:30]}...")
+        logger.info(f"{status} [{i+1}] {clip.get('text', '')[:30]}...")
         if not clip.get("missing"):
-            print(f"    -> {clip.get('track_type')}: {clip.get('video_name', 'N/A')}, "
+            logger.info(f"    -> {clip.get('track_type')}: {clip.get('video_name', 'N/A')}, "
                   f"start={clip.get('start', 0):.2f}, end={clip.get('end', 0):.2f}")

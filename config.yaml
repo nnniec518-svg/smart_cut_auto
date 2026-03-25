@@ -6,11 +6,12 @@ models:
   # FunASR 模型路径
   asr_model: "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
   
-  # BGE-M3 向量模型
-  embedding_model: "BAAI/bge-m3"
-  
-  # 降级模型（可选）
-  fallback_embedding: "sentence-transformers/all-MiniLM-L6-v2"
+  # BGE-Large-ZH 中文向量模型（优化中文语义理解）
+  # 注意：使用本地绝对路径，避免网络下载
+  embedding_model: "C:/Users/nnniec/Program/smart_cut_auto/models/sentence_transformers/models--BAAI--bge-large-zh-v1.5/snapshots/79e7739b6ab944e86d6171e44d24c997fc1e0116"
+
+  # 降级模型（本地已有缓存）
+  fallback_embedding: "C:/Users/nnniec/Program/smart_cut_auto/models/sentence_transformers/models--BAAI--bge-large-zh-v1.5/snapshots/79e7739b6ab944e86d6171e44d24c997fc1e0116"
 
 # ==================== VAD 参数配置 ====================
 vad:
@@ -26,56 +27,31 @@ vad:
   # chunk大小（毫秒）
   chunk_size: 200
 
-# ==================== 通用 A-Roll 评分系统配置 ====================
-evaluator:
-  # 评分权重
-  score_weights:
-    vad_ratio: 0.40             # VAD 占比权重
-    energy: 0.30               # 能量得分权重
-    length: 0.30               # 长度得分权重
-  
-  # 阈值设置
-  min_score: 0.65             # 最低入围分数
-  min_text_length: 3          # 最少文字数
-  min_text_duration: 0.5      # 最少文字时长(秒)
-  min_final_duration: 0.4     # 最小最终时长(秒)
-  min_audio_db: -45           # 最低音频分贝
-  
-  # 语义去重
-  dedup_similarity_threshold: 0.85   # 相似度阈值
-  dedup_min_score: 0.65       # 参与去重的最低分数
-  
-  # 能量归一化参数
-  energy_min_db: -50          # -50dB = 0分
-  energy_max_db: -10          # -10dB = 100分
-  
-  # 缓存配置
-  config_version: "2.0"        # 配置版本 (变更需重算)
-
-# ==================== 逻辑过滤配置 (兼容旧版) ====================
+# ==================== 逻辑过滤配置 ====================
 filter:
   # 双重阈值过滤
   min_text_length: 3           # 最少文字数
-  min_confidence: 0.8          # 最低置信度
-  max_no_speech_prob: 0.5      # 最大无语音概率
+  min_confidence: 0.8           # 最低置信度
+  max_no_speech_prob: 0.5       # 最大无语音概率
   
   # 语义去重
   dedup_similarity_threshold: 0.8  # 相似度阈值
   
   # 物理安全边界
-  min_final_duration: 0.4      # 最小最终时长(秒)
+  min_final_duration: 0.4       # 最小最终时长(秒)
   
   # A/B Roll 打分权重
   score_weights:
-    text_length: 0.30          # 文本长度权重
-    confidence: 0.40           # 置信度权重
-    audio_energy: 0.30         # 音频能量权重
+    text_length: 0.30           # 文本长度权重
+    confidence: 0.40             # 置信度权重
+    audio_energy: 0.30          # 音频能量权重
   
   # A-Roll 入围分数
-  a_roll_threshold: 80
-  
-  # 配置版本
-  config_version: "2.0"
+  a_roll_threshold: 70
+
+  # 逻辑版本（用于缓存强制刷新）
+  # 修改此版本号将强制清理所有缓存
+  logic_version: "2.0"
 
 # ==================== 数据库配置 ====================
 database:
@@ -120,27 +96,198 @@ render:
   # 淡入淡出时长（秒）
   crossfade_duration: 0.2
 
+# ==================== 画中画配置 ====================
+overlay:
+  enabled: true                    # 是否启用画中画叠加
+  position: "bottom-right"         # 位置: top-left, top-right, bottom-left, bottom-right
+  scale: 0.3                     # 缩放比例（0-1）
+  opacity: 0.8                   # 不透明度（0-1）
+  margin: 10                      # 边距（像素）
+
 # ==================== 素材分类阈值 ====================
 classification:
   # 静音阈值 (dB) - 提高以过滤底噪伪口播
   silence_threshold: -40
-  
-  # A_ROLL 最小相似度阈值
-  a_roll_threshold: 0.3
-  
-  # B_ROLL 最小相似度阈值
-  b_roll_threshold: 0.1
+
+  # A_ROLL 最小相似度阈值（从 0.30 降低以提高匹配率）
+  a_roll_threshold: 0.25
+
+  # B_ROLL 最小相似度阈值（从 0.10 降低）
+  b_roll_threshold: 0.08
+
+# ==================== 评分器配置 ====================
+evaluator:
+  # 评分权重
+  score_weights:
+    vad_ratio: 0.30              # VAD 占比权重
+    energy: 0.25                 # 能量得分权重
+    length: 0.20                 # 长度得分权重
+    semantic_integrity: 0.25       # 语义完整性权重
+
+  # 阈值设置
+  min_score: 0.65                # 最低入围分数
+  min_text_length: 3              # 最少文字数
+  min_text_duration: 0.5          # 最少文字时长 (秒)
+  min_final_duration: 0.4          # 最小最终时长 (秒)
+  min_audio_db: -45               # 最低音频分贝
+
+  # 去重配置
+  dedup_similarity_threshold: 0.85 # 相似度阈值
+  dedup_min_score: 0.65           # 参与去重的最低分数
+
+  # 能量归一化参数
+  energy_min_db: -50              # -50dB = 0分
+  energy_max_db: -10              # -10dB = 100分
+
+# ==================== 本地生活纠错词典 ====================
+correction_dict:
+  # 权益相关错误
+  "志高": "权益"
+  "全益": "权益"
+  "全宜": "权益"
+  "全益一": "权益一"
+  "全宜三": "权益三"
+  "全一二": "权益二"
+  "权益四胜": "权益四"
+  "权益四胜权益四胜": "权益一"
+
+  # 产品相关错误
+  "洗红": "洗烘"
+  "洗红套装": "洗烘套装"
+  "极红": "洗烘"
+
+  # 数字和日期相关
+  "三幺五": "315"
+  "三一五": "315"
+  "五折": "5折"
+  "五块": "5折"
+
+  # 其他常见错误
+  "代金券": "代金券"
+  "局改": "局改"
+  "全屋全嗯": "全屋全套"
+  "防换新": "焕新"
+  "升到家": "省到家"
+  "一架全含": "一价全包"
+  "一架": "一价"
+  "美丽奥": "美的"
+  "美丽": "美的"
+  "可以我在": "我在"
+  "重点啊": "重点"
+
+# ==================== 本地生活关键词配置 ====================
+local_life_keywords:
+  # 门店名
+  store_names:
+    - "京东电器"
+    - "京东电器旗舰店"
+    - "京东电器城市体验"
+    - "小天鹅"
+    - "美的"
+    - "格力"
+    - "海尔"
+
+  # 活动名
+  events:
+    - "火三月"
+    - "315活动"
+    - "3月1日"
+    - "3月31日"
+    - "三月一号"
+    - "三月三十一号"
+    - "双11"
+    - "618"
+
+  # 权益名
+  rights:
+    - "权益一"
+    - "权益二"
+    - "权益三"
+    - "权益四"
+    - "四大权益"
+
+  # 产品
+  products:
+    - "洗烘套装"
+    - "空调"
+    - "冰箱"
+    - "洗衣机"
+    - "本色洗烘套装"
+
+  # 优惠类型
+  benefits:
+    - "代金券"
+    - "补贴"
+    - "政府补贴"
+    - "局改服务"
+    - "洗烘套装"
+    - "本色洗烘套装"
+    - "优惠券"
+    - "折扣"
+    - "5折"
+    - "五折"
+
+# ==================== 数字约束配置 ====================
+number_constraint:
+  enabled: true                    # 是否启用数字硬约束（启用以避免金额不匹配）
+  mismatch_penalty: 10.0           # 数字不匹配惩罚分数（设置为极低值以排除候选）
+
+# ==================== 片段合并配置 ====================
+segment_merge:
+  enabled: true                    # 是否启用连续片段拼接
+  max_combine_count: 3             # 最多合并的片段数量
+  min_gap_sec: 1.0                 # 允许的最大时间间隔（秒）
+
+# ==================== 匹配权重配置 ====================
+match_weights:
+  keyword: 0.20      # 关键词命中权重（从 0.40 降低以提高语义匹配）
+  semantic: 0.70      # 语义相似度权重（从 0.50 提高以增强语义理解）
+  edit: 0.10          # 编辑距离权重
 
 # ==================== 匹配惩罚参数 ====================
 matching:
   # 非连续重复惩罚
   penalty_repeat: 0.8
-  
+
   # 时间倒流惩罚
   penalty_time_reverse: 1.0
-  
+
   # 顺序保持奖励
   reward_sequence: 0.2
+
+  # 最低相似度阈值
+  threshold: 0.6                  # 最低相似度，低于此值的片段不入选
+
+  # B-Roll 后备阈值
+  b_roll_fallback_threshold: 0.3   # B-Roll 后备阈值
+
+# ==================== 时长控制配置 ====================
+duration_control:
+  enabled: true                    # 是否启用时长控制
+  target_duration: [15, 30]       # 目标时长范围（秒）[下限, 上限]
+  remove_lowest_quality: true      # 超时时是否删除低质量片段
+
+# ==================== 规划器配置 ====================
+planner:
+  # 惩罚参数
+  penalty_repeat: 0.8              # 非连续重复惩罚
+  penalty_time_reverse: 0.5        # 时间倒流惩罚
+  penalty_hard_time_reverse: 1.0    # 严重时间回溯惩罚（同视频内回跳）
+  reward_sequence: 0.2             # 顺序保持奖励
+  penalty_number_mismatch: 0.4      # 数字不匹配惩罚
+
+  # 阈值
+  a_roll_threshold: 0.25           # A_ROLL 最低相似度阈值（从 0.30 降低）
+  b_roll_threshold: 0.08           # B_ROLL 最低相似度阈值（从 0.10 降低）
+
+  # 平局决胜参数
+  tiebreak_threshold: 0.05         # 平局判定阈值
+  latest_recording_bonus: 0.01     # 末次优先奖励分数
+
+  # 动态窗口参数
+  window_initial_percent: 0.20     # 初始窗口覆盖前20%
+  window_expansion: 1.5            # 窗口扩展系数
+  window_min_size: 10              # 最小窗口大小（句数）
 
 # ==================== 开拍提示词正则 ====================
 cue_words:
